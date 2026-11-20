@@ -1,0 +1,6 @@
+{
+  "name": "ClipPulse",
+  "description": "AI short-form video clipping studio with Gemini viral hook analysis, ML Kit smart 9:16 face framing, and Media3 caption burn-in MP4 export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
