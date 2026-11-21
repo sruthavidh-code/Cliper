@@ -16,7 +16,7 @@ class AppContainer private constructor(context: Context) {
     private val database: ClipPulseDatabase = ClipPulseDatabase.getInstance(appContext)
 
     val repository: ClipRepository = ClipRepository(appContext, database.clipPulseDao())
-    val geminiClipAnalyzer: GeminiClipAnalyzer = GeminiClipAnalyzer()
+    val geminiClipAnalyzer: GeminiClipAnalyzer = GeminiClipAnalyzer(appContext)
     val faceReframeAnalyzer: FaceReframeAnalyzer = FaceReframeAnalyzer(appContext)
     val audioExtractor: AudioExtractor = AudioExtractor(appContext)
     val media3Engine: Media3Engine = Media3Engine(appContext)

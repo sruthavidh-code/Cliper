@@ -1,5 +1,6 @@
 package com.example.ai
 
+import android.content.Context
 import android.util.Log
 import com.example.media.AudioChunkPayload
 import com.example.model.AspectRatioOption
@@ -54,7 +55,19 @@ data class YouTubeAnalysisResult(
     val detectedDurationMs: Long?
 )
 
-class GeminiClipAnalyzer {
+class GeminiClipAnalyzer(
+    private val appContext: Context
+) {
+
+    private fun requireFirebaseReady() {
+        val app = ensureFirebaseAppInitialized(appContext)
+        if (app == null) {
+            throw IllegalStateException(
+                "Firebase is not configured in this build (missing google-services.json resources for " +
+                    "${appContext.packageName}). Place app/google-services.json in the project, rebuild the APK, and reinstall."
+            )
+        }
+    }
 
     // Audio-only structured JSON schema (absolute float seconds for clips and captions)
     private val audioResponseSchema: Schema = Schema.obj(
@@ -181,6 +194,7 @@ class GeminiClipAnalyzer {
         if (audioChunks.isEmpty()) {
             throw IllegalStateException("No extracted audio chunks available for AI analysis.")
         }
+        requireFirebaseReady()
 
         val allClips = mutableListOf<ViralClip>()
         val totalChunks = audioChunks.size
@@ -365,6 +379,7 @@ class GeminiClipAnalyzer {
         focusKeywords: String,
         onStreamingProgress: (charsReceived: Int) -> Unit = {}
     ): YouTubeAnalysisResult {
+        requireFirebaseReady()
         val focusClause = if (focusKeywords.isNotBlank()) {
             "Prioritize moments touching these user focus keywords/topics: \"$focusKeywords\"."
         } else {

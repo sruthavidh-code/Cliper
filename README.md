@@ -23,6 +23,9 @@ ClipPulse is a native Android AI short-form video clipping studio built with **K
 
 > **IMPORTANT — Do NOT Modify `signingConfigs` or Keystore Files**
 > Never delete, rename, or modify `debug.keystore`, `debug.keystore.base64`, or the `signingConfigs` (`release` and `debugConfig`) and `signingConfig` assignments in `app/build.gradle.kts`. They are required for building, installing, and updating the app reliably in AI Studio.
+>
+> **Firebase Config (`app/google-services.json`)**
+> When exporting the project and building locally in Android Studio, ensure `app/google-services.json` (matching `com.aistudio.clippulse.vkmxqr`) is present in `app/`. The Gradle build enforces `MissingGoogleServicesStrategy.ERROR` so APKs are never compiled without Firebase resources.
 
 ### Running Unit Tests
 
