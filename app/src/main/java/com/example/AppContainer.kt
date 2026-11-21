@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.ai.GeminiClipAnalyzer
 import com.example.data.ClipRepository
 import com.example.data.local.ClipPulseDatabase
+import com.example.media.AudioExtractor
 import com.example.media.ExportNotificationManager
 import com.example.media.FaceReframeAnalyzer
 import com.example.media.Media3Engine
@@ -17,6 +18,7 @@ class AppContainer private constructor(context: Context) {
     val repository: ClipRepository = ClipRepository(appContext, database.clipPulseDao())
     val geminiClipAnalyzer: GeminiClipAnalyzer = GeminiClipAnalyzer()
     val faceReframeAnalyzer: FaceReframeAnalyzer = FaceReframeAnalyzer(appContext)
+    val audioExtractor: AudioExtractor = AudioExtractor(appContext)
     val media3Engine: Media3Engine = Media3Engine(appContext)
     val exportNotificationManager: ExportNotificationManager = ExportNotificationManager(appContext)
     val exportCoordinator: VideoExportCoordinator = VideoExportCoordinator(

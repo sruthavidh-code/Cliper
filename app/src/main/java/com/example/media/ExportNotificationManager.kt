@@ -113,7 +113,7 @@ class ExportNotificationManager(private val context: Context) {
         }
 
         val builder = NotificationCompat.Builder(context, CHANNEL_EXPORT_PROGRESS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_export)
             .setContentTitle(header)
             .setContentText(detail)
             .setSubText(subText)
@@ -211,7 +211,7 @@ class ExportNotificationManager(private val context: Context) {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_EXPORT_PROGRESS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_export)
             .setContentTitle(title)
             .setContentText(body)
             .setOngoing(false)
@@ -231,7 +231,7 @@ class ExportNotificationManager(private val context: Context) {
 
         val safeTitle = clipTitle.ifBlank { "Viral Clip" }
         val notification = NotificationCompat.Builder(context, CHANNEL_EXPORT_PROGRESS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_export)
             .setContentTitle("Export Failed • $safeTitle")
             .setContentText(message)
             .setOngoing(false)

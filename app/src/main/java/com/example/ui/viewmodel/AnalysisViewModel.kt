@@ -6,9 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.ai.GeminiClipAnalyzer
+import com.example.ai.NoSpeechDetectedException
 import com.example.data.ClipRepository
+import com.example.media.AudioExtractor
 import com.example.media.FaceReframeAnalyzer
-import com.example.media.Media3Engine
+import com.example.media.NoAudioTrackException
 import com.example.model.ProjectStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -38,7 +40,7 @@ class AnalysisViewModel(
     private val repository: ClipRepository,
     private val geminiAnalyzer: GeminiClipAnalyzer,
     private val faceAnalyzer: FaceReframeAnalyzer,
-    private val media3Engine: Media3Engine
+    private val audioExtractor: AudioExtractor
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<AnalysisUiState>(AnalysisUiState.Idle)
@@ -74,8 +76,8 @@ class AnalysisViewModel(
             repository.updateProjectStatus(projectId, ProjectStatus.ANALYZING)
 
             try {
+                // YouTube path remains unchanged
                 if (project.isYouTubeOnly && !project.youtubeUrl.isNullOrBlank()) {
-                    // Stage 1: Validate YouTube link & metadata
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 0,
@@ -83,7 +85,6 @@ class AnalysisViewModel(
                     )
                     delay(280L)
 
-                    // Stage 2: Detect high-retention hooks directly via Gemini Flash fileData
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 1,
@@ -104,7 +105,6 @@ class AnalysisViewModel(
                         )
                     }
 
-                    // Stage 3: Score viral potential & verify synced caption chunks
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 2,
@@ -115,7 +115,6 @@ class AnalysisViewModel(
                     }
                     delay(350L)
 
-                    // Stage 4: Set smart framing defaults (ML Kit activates if local video is attached)
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 3,
@@ -135,70 +134,90 @@ class AnalysisViewModel(
                     return@launch
                 }
 
-                // Stage 1: Prepare video metadata & compact AI proxy if > 18 MB
+                // Local video path (never uploads video — keeps original strictly as content:// URI)
+                val sourceUri = Uri.parse(project.sourceUri)
+
+                // Stage 0: Extracting audio (16 kHz mono AAC + 50 ms loudness envelope)
                 _uiState.value = AnalysisUiState.Running(
                     projectTitle = project.title,
                     activeStageIndex = 0,
-                    stageSubtitle = "Inspecting source tracks and checking payload size..."
+                    stageSubtitle = "Extracting audio track & loudness envelope...",
+                    proxyProgressPercent = 0
                 )
-                val sourceUri = Uri.parse(project.sourceUri)
-                val payload = media3Engine.prepareVideoPayloadForGemini(sourceUri) { proxyPct ->
+                val extracted = audioExtractor.extractAudioForGemini(
+                    sourceUri = sourceUri,
+                    fallbackDurationMs = project.durationMs
+                ) { pct ->
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 0,
-                        stageSubtitle = "Auto-compressing lightweight AI proxy ($proxyPct%)...",
-                        proxyProgressPercent = proxyPct
+                        stageSubtitle = "Extracting audio ($pct%)...",
+                        proxyProgressPercent = pct
                     )
                 }
 
-                // Stage 2: Detect high-retention hooks with Firebase AI Logic (Gemini Flash)
+                val exactDurationMs = extracted.totalDurationMs.coerceAtLeast(project.durationMs)
+                if (exactDurationMs > 0L && exactDurationMs != project.durationMs) {
+                    repository.updateProjectDuration(project.id, exactDurationMs)
+                }
+
+                // Stage 1: Analyzing with Gemini (audio/mp4 inline upload, chunked only if > 14 MB)
+                val chunkCount = extracted.chunks.size
                 _uiState.value = AnalysisUiState.Running(
                     projectTitle = project.title,
                     activeStageIndex = 1,
-                    stageSubtitle = if (payload.wasCompressedProxy) {
-                        "Compact AI proxy ready. Scanning with Gemini Flash for 3-second viral hooks..."
+                    stageSubtitle = if (chunkCount > 1) {
+                        "Analyzing audio chunk 1 of $chunkCount with Gemini Flash..."
                     } else {
-                        "Scanning video audio & visuals with Gemini Flash for high-retention hooks..."
-                    }
+                        "Analyzing audio with Gemini Flash for spoken viral hooks..."
+                    },
+                    proxyProgressPercent = null
                 )
 
                 val generatedClips = geminiAnalyzer.analyzeVideo(
-                    videoBytes = payload.bytes,
-                    mimeType = payload.mimeType,
+                    audioChunks = extracted.chunks,
                     projectId = project.id,
-                    durationMs = project.durationMs,
+                    totalDurationMs = exactDurationMs,
+                    loudnessEnvelope = extracted.loudnessEnvelope,
+                    envelopeBucketMs = extracted.envelopeBucketMs,
                     targetDuration = project.targetDuration,
                     aspectRatio = project.aspectRatio,
                     defaultCaptionStyle = project.defaultCaptionStyle,
                     focusKeywords = project.focusKeywords
-                ) { chars ->
+                ) { chunkIndex, totalChunks, chars ->
+                    val label = if (totalChunks > 1) {
+                        "Analyzing with Gemini (chunk ${chunkIndex + 1}/$totalChunks • $chars chars)..."
+                    } else {
+                        "Analyzing with Gemini ($chars chars)..."
+                    }
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 1,
-                        stageSubtitle = "Streaming viral hooks & captions from Gemini Flash ($chars chars)..."
+                        stageSubtitle = label,
+                        proxyProgressPercent = null
                     )
                 }
 
-                // Stage 3: Score viral potential & verify synced caption chunks
+                // Stage 2: Ranking & pause-gap snapping
                 _uiState.value = AnalysisUiState.Running(
                     projectTitle = project.title,
                     activeStageIndex = 2,
-                    stageSubtitle = "Ranking ${generatedClips.size} moments by hook, flow & engagement..."
+                    stageSubtitle = "Ranking ${generatedClips.size} clips, snapping cuts to pauses & syncing word captions..."
                 )
-                delay(450L)
+                delay(350L)
 
-                // Stage 4: Calculate 9:16 smart framing with on-device ML Kit Face Detection
+                // Stage 3: Framing on the local video URI via on-device ML Kit Face Detection
                 _uiState.value = AnalysisUiState.Running(
                     projectTitle = project.title,
                     activeStageIndex = 3,
-                    stageSubtitle = "Sampling frames with ML Kit Face Detection for 9:16 framing..."
+                    stageSubtitle = "Framing clips with on-device ML Kit Face Detection..."
                 )
 
                 val reframedClips = generatedClips.mapIndexed { idx, clip ->
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 3,
-                        stageSubtitle = "Auto-framing clip ${idx + 1} of ${generatedClips.size}..."
+                        stageSubtitle = "Framing clip ${idx + 1} of ${generatedClips.size}..."
                     )
                     val faceX = faceAnalyzer.computeSmartHorizontalFocus(
                         videoUri = sourceUri,
@@ -216,6 +235,22 @@ class AnalysisViewModel(
                 _uiState.value = AnalysisUiState.Completed(project.id, reframedClips.size)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: NoAudioTrackException) {
+                Log.w(TAG, "Selected video has no audio track", e)
+                repository.updateProjectStatus(projectId, ProjectStatus.ERROR)
+                _uiState.value = AnalysisUiState.Error(
+                    projectTitle = project.title,
+                    message = e.message
+                        ?: "This video has no audio track. Please import a video with sound."
+                )
+            } catch (e: NoSpeechDetectedException) {
+                Log.w(TAG, "No spoken speech detected in audio", e)
+                repository.updateProjectStatus(projectId, ProjectStatus.ERROR)
+                _uiState.value = AnalysisUiState.Error(
+                    projectTitle = project.title,
+                    message = e.message
+                        ?: "No spoken dialogue was detected in this video's audio. Import a video with speech or tap Retry."
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "AI analysis pipeline failed", e)
                 repository.updateProjectStatus(projectId, ProjectStatus.ERROR)
@@ -231,7 +266,6 @@ class AnalysisViewModel(
     override fun onCleared() {
         super.onCleared()
         activeJob?.cancel()
-        media3Engine.cancelActiveOperation()
     }
 
     companion object {
@@ -240,7 +274,7 @@ class AnalysisViewModel(
             repository: ClipRepository,
             geminiAnalyzer: GeminiClipAnalyzer,
             faceAnalyzer: FaceReframeAnalyzer,
-            media3Engine: Media3Engine
+            audioExtractor: AudioExtractor
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -249,7 +283,7 @@ class AnalysisViewModel(
                     repository = repository,
                     geminiAnalyzer = geminiAnalyzer,
                     faceAnalyzer = faceAnalyzer,
-                    media3Engine = media3Engine
+                    audioExtractor = audioExtractor
                 ) as T
             }
         }

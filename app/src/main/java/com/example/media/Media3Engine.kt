@@ -21,7 +21,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Crop
 import androidx.media3.effect.DefaultGlObjectsProvider
 import androidx.media3.effect.DefaultVideoFrameProcessor
-import androidx.media3.effect.FrameDropEffect
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
@@ -34,7 +33,6 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.InAppMuxer
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
-import androidx.media3.transformer.VideoEncoderSettings
 import com.example.model.AspectRatioOption
 import com.example.model.CaptionStylePreset
 import com.example.model.ExportResolution
@@ -60,14 +58,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 private const val TAG = "Media3Engine"
-private const val MAX_DIRECT_INLINE_BYTES = 12L * 1024L * 1024L // 12 MB direct upload (avoids unnecessary proxy transcode on compact 5-min videos)
-private const val MAX_INLINE_GEMINI_BYTES = 14L * 1024L * 1024L // 14 MB hard ceiling (base64 stays well under 20 MB)
-
-data class PreparedVideoPayload(
-    val bytes: ByteArray,
-    val mimeType: String,
-    val wasCompressedProxy: Boolean
-)
 
 enum class ExportStage(val shortLabel: String, val notificationLabel: String) {
     PREPARING("Preparing", "Preparing media & framing"),
@@ -132,79 +122,6 @@ class Media3Engine(private val context: Context) {
     fun cancelActiveOperation() {
         val current = activeTransformer.getAndSet(null) ?: return
         cancelTransformerOnMain(current)
-    }
-
-    /**
-     * Reads compact videos (<= 12 MB) directly for instant Gemini upload with zero transcoding,
-     * or compresses larger/longer videos in a single 1 FPS 240p low-bitrate pass (matching
-     * Gemini's 1 FPS video ingestion) so large recordings stay well within inline limits.
-     */
-    suspend fun prepareVideoPayloadForGemini(
-        sourceUri: Uri,
-        onProxyCompressing: (percent: Int) -> Unit
-    ): PreparedVideoPayload {
-        val rawSize = queryFileSize(sourceUri)
-        if (rawSize in 1L..MAX_DIRECT_INLINE_BYTES) {
-            val bytes = readUriBytes(sourceUri)
-            val mime = context.contentResolver.getType(sourceUri) ?: MimeTypes.VIDEO_MP4
-            return PreparedVideoPayload(
-                bytes = bytes,
-                mimeType = mime,
-                wasCompressedProxy = false
-            )
-        }
-
-        // Single-pass ultra-compact 240p @ 1 FPS (120 kbps) AI proxy in app cache
-        val proxyDir = File(context.cacheDir, "ai_proxy").apply { mkdirs() }
-        val proxyFile = File(proxyDir, "proxy_${System.currentTimeMillis()}.mp4")
-        try {
-            onProxyCompressing(0)
-            transcodeProxy(
-                sourceUri = sourceUri,
-                outputFile = proxyFile,
-                targetHeight = 240,
-                targetFps = 1.0f,
-                targetVideoBitrate = 120_000,
-                onProgress = onProxyCompressing
-            )
-
-            if (proxyFile.length() > MAX_INLINE_GEMINI_BYTES) {
-                // Ultra-long video fallback: 180p @ 0.5 FPS (80 kbps)
-                val ultraProxy = File(proxyDir, "proxy_180_${System.currentTimeMillis()}.mp4")
-                try {
-                    transcodeProxy(
-                        sourceUri = sourceUri,
-                        outputFile = ultraProxy,
-                        targetHeight = 180,
-                        targetFps = 0.5f,
-                        targetVideoBitrate = 80_000,
-                        onProgress = onProxyCompressing
-                    )
-                    if (ultraProxy.length() > MAX_INLINE_GEMINI_BYTES) {
-                        throw IllegalStateException(
-                            "This video is too long for inline AI analysis (>14 MB even after ultra-compact proxy compression). Please import a shorter recording."
-                        )
-                    }
-                    val bytes = withContext(Dispatchers.IO) { ultraProxy.readBytes() }
-                    return PreparedVideoPayload(
-                        bytes = bytes,
-                        mimeType = MimeTypes.VIDEO_MP4,
-                        wasCompressedProxy = true
-                    )
-                } finally {
-                    ultraProxy.delete()
-                }
-            }
-
-            val bytes = withContext(Dispatchers.IO) { proxyFile.readBytes() }
-            return PreparedVideoPayload(
-                bytes = bytes,
-                mimeType = MimeTypes.VIDEO_MP4,
-                wasCompressedProxy = true
-            )
-        } finally {
-            proxyFile.delete()
-        }
     }
 
     /**
@@ -442,140 +359,6 @@ class Media3Engine(private val context: Context) {
         }
     }
 
-    private suspend fun transcodeProxy(
-        sourceUri: Uri,
-        outputFile: File,
-        targetHeight: Int,
-        targetFps: Float,
-        targetVideoBitrate: Int,
-        onProgress: (Int) -> Unit
-    ) {
-        val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(sourceUri))
-            .setEffects(
-                Effects(
-                    emptyList(),
-                    listOf(
-                        FrameDropEffect.createDefaultFrameDropEffect(targetFps),
-                        Presentation.createForHeight(targetHeight)
-                    )
-                )
-            )
-            .build()
-        runTransformer(
-            editedMediaItem = editedItem,
-            outputPath = outputFile.absolutePath,
-            targetVideoBitrate = targetVideoBitrate,
-            onProgressState = { progressState, rawPercent ->
-                if (progressState == Transformer.PROGRESS_STATE_AVAILABLE) {
-                    onProgress(rawPercent)
-                }
-            }
-        )
-    }
-
-    private suspend fun runTransformer(
-        editedMediaItem: EditedMediaItem,
-        outputPath: String,
-        targetVideoBitrate: Int? = null,
-        onProgressState: (progressState: Int, rawPercent: Int) -> Unit
-    ) = transformerMutex.withLock {
-        withContext(Dispatchers.Main) {
-            var progressJob: Job? = null
-            try {
-                suspendCancellableCoroutine { continuation ->
-                val frameProcessorFactory = DefaultVideoFrameProcessor.Factory.Builder()
-                    .setGlObjectsProvider(SafeGlObjectsProvider())
-                    .build()
-
-                val builder = Transformer.Builder(context)
-                    .setMuxerFactory(InAppMuxer.Factory.Builder().build())
-                    .setVideoFrameProcessorFactory(frameProcessorFactory)
-                    .setVideoMimeType(MimeTypes.VIDEO_H264)
-                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
-
-                if (targetVideoBitrate != null) {
-                    val encoderSettings = VideoEncoderSettings.Builder()
-                        .setBitrate(targetVideoBitrate)
-                        .build()
-                    val encoderFactory = DefaultEncoderFactory.Builder(context)
-                        .setRequestedVideoEncoderSettings(encoderSettings)
-                        .setEnableFallback(true)
-                        .build()
-                    builder.setEncoderFactory(encoderFactory)
-                } else {
-                    builder.setEncoderFactory(
-                        DefaultEncoderFactory.Builder(context)
-                            .setEnableFallback(true)
-                            .build()
-                    )
-                }
-
-                val transformer = builder
-                    .addListener(object : Transformer.Listener {
-                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                            progressJob?.cancel()
-                            activeTransformer.set(null)
-                            if (continuation.isActive) {
-                                continuation.resume(Unit)
-                            }
-                        }
-
-                        override fun onError(
-                            composition: Composition,
-                            exportResult: ExportResult,
-                            exportException: ExportException
-                        ) {
-                            progressJob?.cancel()
-                            activeTransformer.set(null)
-                            Log.e(TAG, "Media3 Transformer export failed", exportException)
-                            if (continuation.isActive) {
-                                val friendly = when (exportException.errorCode) {
-                                    ExportException.ERROR_CODE_DECODER_INIT_FAILED,
-                                    ExportException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ->
-                                        "This video codec is unsupported by the device hardware decoder. Try another video."
-                                    ExportException.ERROR_CODE_ENCODER_INIT_FAILED,
-                                    ExportException.ERROR_CODE_ENCODING_FORMAT_UNSUPPORTED ->
-                                        "Could not initialize MP4 encoder at this resolution. Try switching to 720p Fast."
-                                    else ->
-                                        exportException.localizedMessage
-                                            ?: "Video export failed (${exportException.errorCodeName})."
-                                }
-                                continuation.resumeWithException(IllegalStateException(friendly, exportException))
-                            }
-                        }
-                    })
-                    .build()
-
-                activeTransformer.set(transformer)
-
-                continuation.invokeOnCancellation {
-                    progressJob?.cancel()
-                    activeTransformer.compareAndSet(transformer, null)
-                    cancelTransformerOnMain(transformer)
-                }
-
-                transformer.start(editedMediaItem, outputPath)
-
-                val holder = ProgressHolder()
-                progressJob = launch {
-                    while (isActive) {
-                        val state = transformer.getProgress(holder)
-                        val pct = if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
-                            holder.progress.coerceIn(0, 100)
-                        } else {
-                            0
-                        }
-                        onProgressState(state, pct)
-                        delay(120L)
-                    }
-                }
-            }
-            } finally {
-                progressJob?.cancel()
-            }
-        }
-    }
-
     private suspend fun runTransformerResumable(
         composition: Composition,
         outputPath: String,
@@ -794,20 +577,5 @@ class Media3Engine(private val context: Context) {
             return null
         }
         return Crop(left, right, bottom, top)
-    }
-
-    private suspend fun queryFileSize(uri: Uri): Long = withContext(Dispatchers.IO) {
-        try {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
-                afd.length
-            } ?: -1L
-        } catch (_: Exception) {
-            -1L
-        }
-    }
-
-    private suspend fun readUriBytes(uri: Uri): ByteArray = withContext(Dispatchers.IO) {
-        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("Could not read selected video file.")
     }
 }

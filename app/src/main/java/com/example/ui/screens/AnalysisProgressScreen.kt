@@ -68,10 +68,10 @@ import com.example.ui.viewmodel.AnalysisUiState
 import com.example.ui.viewmodel.AnalysisViewModel
 
 private val ANALYSIS_STAGES = listOf(
-    "Preparing video metadata & extracting audio/frames",
-    "Detecting high-retention hooks with Gemini Flash",
-    "Scoring viral potential & generating synced captions",
-    "Calculating 9:16 smart framing"
+    "Extracting audio",
+    "Analyzing with Gemini",
+    "Ranking",
+    "Framing"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

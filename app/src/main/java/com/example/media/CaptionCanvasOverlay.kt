@@ -61,6 +61,7 @@ class CaptionCanvasOverlay(
     )
     private val overlayCanvas = Canvas(overlayBitmap)
     private var lastDrawnChunkIndex: Int = Int.MIN_VALUE
+    private var lastDrawnWordIndex: Int = Int.MIN_VALUE
 
     override fun getBitmap(presentationTimeUs: Long): Bitmap {
         val timeMs = presentationTimeUs / 1_000L
@@ -70,22 +71,39 @@ class CaptionCanvasOverlay(
             captions.indexOfFirst { timeMs in it.startMs..it.endMs }
         }
 
-        if (chunkIndex == lastDrawnChunkIndex) {
+        val activeWordIndex = if (chunkIndex >= 0) {
+            val timings = captions[chunkIndex].resolvedWordTimings()
+            val direct = timings.indexOfFirst { timeMs in it.startMs..it.endMs }
+            when {
+                direct >= 0 -> direct
+                timings.isNotEmpty() -> timings.indexOfLast { timeMs >= it.startMs }.coerceAtLeast(0)
+                else -> -1
+            }
+        } else {
+            -1
+        }
+
+        if (chunkIndex == lastDrawnChunkIndex && activeWordIndex == lastDrawnWordIndex) {
             return overlayBitmap
         }
         lastDrawnChunkIndex = chunkIndex
+        lastDrawnWordIndex = activeWordIndex
 
         // Clear previous frame's caption pixels cleanly
         overlayCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         if (chunkIndex < 0) return overlayBitmap
 
-        drawCaptionChunk(overlayCanvas, captions[chunkIndex])
+        drawCaptionChunk(overlayCanvas, captions[chunkIndex], activeWordIndex)
         return overlayBitmap
     }
 
-    private fun drawCaptionChunk(canvas: Canvas, activeChunk: CaptionChunk) {
+    private fun drawCaptionChunk(
+        canvas: Canvas,
+        activeChunk: CaptionChunk,
+        activeWordIndex: Int
+    ) {
         val rawText = if (uppercase) activeChunk.text.uppercase() else activeChunk.text
-        val words = rawText.split(" ").filter { it.isNotBlank() }
+        val words = rawText.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.isEmpty()) return
 
         val highlightTarget = activeChunk.highlightWord
@@ -138,6 +156,7 @@ class CaptionCanvasOverlay(
             canvas.drawRoundRect(pillRect, baseTextSize * 0.45f, baseTextSize * 0.45f, bgPaint)
         }
 
+        var flatWordIndex = 0
         lines.forEachIndexed { lineIndex, lineWords ->
             val lineW = measureLineWidth(lineWords, spaceWidth)
             var cursorX = (width - lineW) / 2f
@@ -145,8 +164,13 @@ class CaptionCanvasOverlay(
 
             lineWords.forEach { word ->
                 val cleanWord = word.replace(Regex("[^A-Za-z0-9]"), "").lowercase()
-                val isHighlight = highlightTarget.isNotEmpty() &&
-                    (cleanWord == highlightTarget || cleanWord.contains(highlightTarget))
+                val isHighlight = if (activeWordIndex in words.indices) {
+                    flatWordIndex == activeWordIndex
+                } else {
+                    highlightTarget.isNotEmpty() &&
+                        (cleanWord == highlightTarget || cleanWord.contains(highlightTarget))
+                }
+                flatWordIndex++
                 val wordWidth = fillPaint.measureText(word)
 
                 when (style) {

@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.CaptionChunk
 import com.example.model.CaptionStylePreset
+import com.example.model.CaptionWordTiming
 import com.example.ui.theme.BorderHairline
 import com.example.ui.theme.CaptionYellow
 import com.example.ui.theme.CharcoalBg
@@ -94,11 +95,14 @@ fun LiveCaptionOverlay(
                 label = "caption_chunk_anim"
             ) { chunk ->
                 if (chunk != null) {
+                    val wordTimings = chunk.resolvedWordTimings()
+                    val activeWordIndex = resolveActiveWordIndex(wordTimings, relativePositionMs)
                     RenderedCaptionLine(
                         text = if (uppercase) chunk.text.uppercase() else chunk.text,
                         highlightWord = chunk.highlightWord,
                         style = style,
-                        compact = false
+                        compact = false,
+                        activeWordIndex = activeWordIndex
                     )
                 }
             }
@@ -113,13 +117,22 @@ fun RenderedCaptionLine(
     highlightWord: String,
     style: CaptionStylePreset,
     compact: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeWordIndex: Int? = null
 ) {
-    val words = text.split(" ").filter { it.isNotBlank() }
+    val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
     val normalizedHighlight = highlightWord
         .trim()
         .replace(Regex("[^A-Za-z0-9]"), "")
         .lowercase()
+
+    fun isHighlighted(index: Int, word: String): Boolean {
+        return if (activeWordIndex != null && activeWordIndex in words.indices) {
+            index == activeWordIndex
+        } else {
+            isWordHighlighted(word, normalizedHighlight)
+        }
+    }
 
     when (style) {
         CaptionStylePreset.HORMOZI_BOLD -> {
@@ -130,8 +143,8 @@ fun RenderedCaptionLine(
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 7.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                words.forEach { word ->
-                    val isHit = isWordHighlighted(word, normalizedHighlight)
+                words.forEachIndexed { index, word ->
+                    val isHit = isHighlighted(index, word)
                     OutlinedCaptionWord(
                         word = word,
                         fillColor = if (isHit) NeonLime else Color.White,
@@ -151,8 +164,8 @@ fun RenderedCaptionLine(
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp, Alignment.CenterHorizontally),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                words.forEach { word ->
-                    val isHit = isWordHighlighted(word, normalizedHighlight)
+                words.forEachIndexed { index, word ->
+                    val isHit = isHighlighted(index, word)
                     val boxModifier = if (isHit) {
                         Modifier
                             .clip(RoundedCornerShape(if (compact) 5.dp else 8.dp))
@@ -191,8 +204,8 @@ fun RenderedCaptionLine(
                     horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    words.forEach { word ->
-                        val isHit = isWordHighlighted(word, normalizedHighlight)
+                    words.forEachIndexed { index, word ->
+                        val isHit = isHighlighted(index, word)
                         Text(
                             text = word,
                             style = TextStyle(
@@ -306,6 +319,17 @@ fun CaptionStylePresetCard(
             )
         }
     }
+}
+
+private fun resolveActiveWordIndex(
+    wordTimings: List<CaptionWordTiming>,
+    relativePositionMs: Long
+): Int? {
+    if (wordTimings.isEmpty()) return null
+    val direct = wordTimings.indexOfFirst { relativePositionMs in it.startMs..it.endMs }
+    if (direct >= 0) return direct
+    val lastStarted = wordTimings.indexOfLast { relativePositionMs >= it.startMs }
+    return if (lastStarted >= 0) lastStarted else 0
 }
 
 private fun isWordHighlighted(word: String, normalizedHighlight: String): Boolean {

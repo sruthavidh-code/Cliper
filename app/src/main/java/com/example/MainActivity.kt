@@ -95,7 +95,7 @@ private fun ClipPulseNavGraph(appContainer: AppContainer) {
                     repository = appContainer.repository,
                     geminiAnalyzer = appContainer.geminiClipAnalyzer,
                     faceAnalyzer = appContainer.faceReframeAnalyzer,
-                    media3Engine = appContainer.media3Engine
+                    audioExtractor = appContainer.audioExtractor
                 )
             )
             AnalysisProgressScreen(

@@ -100,12 +100,67 @@ data class ClipConfig(
     val focusKeywords: String = ""
 )
 
+data class CaptionWordTiming(
+    val text: String,
+    val startMs: Long,
+    val endMs: Long
+)
+
 data class CaptionChunk(
     val startMs: Long,
     val endMs: Long,
     val text: String,
-    val highlightWord: String
-)
+    val highlightWord: String,
+    val words: List<CaptionWordTiming> = emptyList()
+) {
+    fun resolvedWordTimings(): List<CaptionWordTiming> {
+        if (words.isNotEmpty()) return words
+        return distributeCaptionWordsProportionally(text, startMs, endMs)
+    }
+}
+
+/**
+ * Splits a caption phrase into tokens and distributes [startMs, endMs] across each word
+ * proportionally to its character count (minimum weight 1 per word).
+ */
+fun distributeCaptionWordsProportionally(
+    text: String,
+    startMs: Long,
+    endMs: Long
+): List<CaptionWordTiming> {
+    val tokens = text.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return emptyList()
+    val safeStart = startMs.coerceAtLeast(0L)
+    val safeEnd = endMs.coerceAtLeast(safeStart + 1L)
+    val totalSpan = safeEnd - safeStart
+
+    val weights = tokens.map { token ->
+        token.replace(Regex("[^A-Za-z0-9]"), "").length.coerceAtLeast(1)
+    }
+    val totalWeight = weights.sum().coerceAtLeast(1)
+
+    val result = ArrayList<CaptionWordTiming>(tokens.size)
+    var cumulativeWeight = 0
+    for (i in tokens.indices) {
+        val wordStart = if (i == 0) {
+            safeStart
+        } else {
+            safeStart + (totalSpan * cumulativeWeight) / totalWeight
+        }
+        cumulativeWeight += weights[i]
+        val wordEnd = if (i == tokens.lastIndex) {
+            safeEnd
+        } else {
+            (safeStart + (totalSpan * cumulativeWeight) / totalWeight).coerceAtLeast(wordStart + 1L)
+        }
+        result += CaptionWordTiming(
+            text = tokens[i],
+            startMs = wordStart,
+            endMs = wordEnd.coerceAtMost(safeEnd)
+        )
+    }
+    return result
+}
 
 data class VideoProject(
     val id: Long = 0L,
@@ -203,6 +258,19 @@ object ClipJsonCodec {
                     put("endMs", chunk.endMs)
                     put("text", chunk.text)
                     put("highlightWord", chunk.highlightWord)
+                    if (chunk.words.isNotEmpty()) {
+                        val wordsArr = JSONArray()
+                        chunk.words.forEach { w ->
+                            wordsArr.put(
+                                JSONObject().apply {
+                                    put("text", w.text)
+                                    put("startMs", w.startMs)
+                                    put("endMs", w.endMs)
+                                }
+                            )
+                        }
+                        put("words", wordsArr)
+                    }
                 }
             )
         }
@@ -214,11 +282,30 @@ object ClipJsonCodec {
             val arr = JSONArray(json)
             (0 until arr.length()).map { i ->
                 val obj = arr.getJSONObject(i)
+                val startMs = obj.optLong("startMs", 0L)
+                val endMs = obj.optLong("endMs", 1_000L)
+                val text = obj.optString("text", "")
+                val wordsArr = obj.optJSONArray("words")
+                val words = if (wordsArr != null && wordsArr.length() > 0) {
+                    (0 until wordsArr.length()).mapNotNull { wi ->
+                        val wObj = wordsArr.optJSONObject(wi) ?: return@mapNotNull null
+                        val wText = wObj.optString("text", "").trim()
+                        if (wText.isEmpty()) return@mapNotNull null
+                        CaptionWordTiming(
+                            text = wText,
+                            startMs = wObj.optLong("startMs", startMs),
+                            endMs = wObj.optLong("endMs", endMs)
+                        )
+                    }
+                } else {
+                    emptyList()
+                }
                 CaptionChunk(
-                    startMs = obj.optLong("startMs", 0L),
-                    endMs = obj.optLong("endMs", 1_000L),
-                    text = obj.optString("text", ""),
-                    highlightWord = obj.optString("highlightWord", "")
+                    startMs = startMs,
+                    endMs = endMs,
+                    text = text,
+                    highlightWord = obj.optString("highlightWord", ""),
+                    words = words
                 )
             }
         } catch (_: Exception) {

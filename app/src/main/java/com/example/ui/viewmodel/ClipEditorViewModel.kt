@@ -16,6 +16,7 @@ import com.example.model.ExportResolution
 import com.example.model.VideoFilterPreset
 import com.example.model.VideoProject
 import com.example.model.ViralClip
+import com.example.model.distributeCaptionWordsProportionally
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -227,7 +228,8 @@ class ClipEditorViewModel(
             startMs = old.startMs,
             endMs = old.endMs,
             text = trimmed,
-            highlightWord = chosenHighlight
+            highlightWord = chosenHighlight,
+            words = distributeCaptionWordsProportionally(trimmed, old.startMs, old.endMs)
         )
         saveClip(clip.copy(captions = mutable))
     }
