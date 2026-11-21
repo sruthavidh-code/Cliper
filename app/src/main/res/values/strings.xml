@@ -3,7 +3,7 @@
     <string name="studio_tagline">AI Viral Clip Studio</string>
     <string name="stat_clips_created">%1$d Clips Created</string>
     <string name="hero_title">Turn Long Videos Into Viral Shorts</string>
-    <string name="hero_subtitle">Gemini AI finds scroll-stopping hooks, scores viral potential, tracks faces in 9:16, and burns pro captions on-device.</string>
+    <string name="hero_subtitle">Gemini Flash finds scroll-stopping hooks, scores viral potential, tracks faces in 9:16, and burns pro captions on-device.</string>
     <string name="cta_import_video">Import Long Video</string>
     <string name="cta_try_demo">Try Demo Mode</string>
     <string name="section_recent_projects">Recent Projects</string>
@@ -18,7 +18,7 @@
     <string name="cta_generate_clips">Generate Viral Clips</string>
     <string name="analysis_header">AI Clip Pipeline</string>
     <string name="analysis_stage_1">Preparing video metadata &amp; AI proxy</string>
-    <string name="analysis_stage_2">Detecting high-retention hooks with Gemini AI</string>
+    <string name="analysis_stage_2">Detecting high-retention hooks with Gemini Flash</string>
     <string name="analysis_stage_3">Scoring viral potential &amp; generating synced captions</string>
     <string name="analysis_stage_4">Calculating 9:16 smart framing</string>
     <string name="cta_retry_analysis">Retry AI Analysis</string>
@@ -41,4 +41,9 @@
     <string name="export_back_clips">Back to Clips</string>
     <string name="demo_badge">DEMO MODE</string>
     <string name="hashtags_copied">Hashtags copied to clipboard</string>
+    <string name="export_action_pause">Pause</string>
+    <string name="export_action_resume">Resume</string>
+    <string name="export_action_cancel">Cancel</string>
+    <string name="export_paused_badge">PAUSED</string>
+    <string name="export_foreground_hint">Foreground service active • Control via notification or minimize</string>
 </resources>

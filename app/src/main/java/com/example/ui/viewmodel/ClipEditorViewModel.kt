@@ -6,18 +6,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.ClipRepository
+import com.example.media.ExportStage
 import com.example.media.FaceReframeAnalyzer
-import com.example.media.Media3Engine
-import com.example.media.YouTubeSupport
+import com.example.media.VideoExportCoordinator
 import com.example.model.AspectRatioOption
 import com.example.model.CaptionChunk
 import com.example.model.CaptionStylePreset
 import com.example.model.ExportResolution
+import com.example.model.VideoFilterPreset
 import com.example.model.VideoProject
 import com.example.model.ViralClip
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +26,31 @@ import kotlinx.coroutines.launch
 private const val TAG = "ClipEditorViewModel"
 
 sealed interface ExportUiState {
+    val isActiveRender: Boolean
+        get() = when (this) {
+            is Exporting -> true
+            is DemoPreview -> !isComplete
+            else -> false
+        }
+
+    val isPausedRender: Boolean
+        get() = when (this) {
+            is Exporting -> isPaused
+            is DemoPreview -> !isComplete && isPaused
+            else -> false
+        }
+
+    val isMinimizedBannerVisible: Boolean
+        get() = when (this) {
+            is Exporting -> isMinimized
+            is DemoPreview -> isMinimized
+            is Completed -> isMinimized
+            is Error -> isMinimized
+            else -> false
+        }
+
     data object Hidden : ExportUiState
+
     data class Configure(
         val clip: ViralClip,
         val resolution: ExportResolution = ExportResolution.HD_1080P,
@@ -38,19 +60,37 @@ sealed interface ExportUiState {
     data class Exporting(
         val clip: ViralClip,
         val resolution: ExportResolution,
-        val progressPercent: Int
+        val stage: ExportStage = ExportStage.PREPARING,
+        val progressPercent: Int = 0,
+        val isIndeterminate: Boolean = true,
+        val elapsedMs: Long = 0L,
+        val estimatedRemainingMs: Long? = null,
+        val hasCaptions: Boolean = true,
+        val isPaused: Boolean = false,
+        val isMinimized: Boolean = false,
+        val showCancelConfirmation: Boolean = false
     ) : ExportUiState
 
     data class Completed(
         val clip: ViralClip,
-        val exportedUri: Uri
+        val exportedUri: Uri,
+        val totalRenderMs: Long = 0L,
+        val isMinimized: Boolean = false
     ) : ExportUiState
 
     data class DemoPreview(
         val clip: ViralClip,
         val resolution: ExportResolution,
-        val progressPercent: Int,
-        val isComplete: Boolean
+        val stage: ExportStage = ExportStage.PREPARING,
+        val progressPercent: Int = 0,
+        val isIndeterminate: Boolean = true,
+        val elapsedMs: Long = 0L,
+        val estimatedRemainingMs: Long? = null,
+        val hasCaptions: Boolean = true,
+        val isPaused: Boolean = false,
+        val isComplete: Boolean = false,
+        val isMinimized: Boolean = false,
+        val showCancelConfirmation: Boolean = false
     ) : ExportUiState
 
     data class YouTubeOptions(
@@ -63,7 +103,8 @@ sealed interface ExportUiState {
     data class Error(
         val clip: ViralClip,
         val resolution: ExportResolution,
-        val message: String
+        val message: String,
+        val isMinimized: Boolean = false
     ) : ExportUiState
 }
 
@@ -71,7 +112,7 @@ class ClipEditorViewModel(
     private val projectId: Long,
     private val repository: ClipRepository,
     private val faceAnalyzer: FaceReframeAnalyzer,
-    private val media3Engine: Media3Engine
+    private val exportCoordinator: VideoExportCoordinator
 ) : ViewModel() {
 
     val project: StateFlow<VideoProject?> = repository.observeProject(projectId)
@@ -80,13 +121,10 @@ class ClipEditorViewModel(
     val clips: StateFlow<List<ViralClip>> = repository.observeClipsForProject(projectId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
 
-    private val _exportState = MutableStateFlow<ExportUiState>(ExportUiState.Hidden)
-    val exportState: StateFlow<ExportUiState> = _exportState.asStateFlow()
+    val exportState: StateFlow<ExportUiState> = exportCoordinator.exportState
 
     private val _isComputingFaceTrack = MutableStateFlow(false)
     val isComputingFaceTrack: StateFlow<Boolean> = _isComputingFaceTrack.asStateFlow()
-
-    private var exportJob: Job? = null
 
     fun observeClip(clipId: Long): StateFlow<ViralClip?> = repository.observeClip(clipId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), null)
@@ -120,7 +158,6 @@ class ClipEditorViewModel(
         }
 
         if (currentProject.isYouTubeOnly) {
-            // ML Kit requires local decoded video frames; keep safe center-crop until local file is attached
             saveClip(clip.copy(autoFaceTrackEnabled = false, faceCenterX = 0f))
             return
         }
@@ -163,6 +200,10 @@ class ClipEditorViewModel(
         saveClip(clip.copy(aspectRatio = aspectRatio))
     }
 
+    fun updateVideoFilter(clip: ViralClip, filter: VideoFilterPreset) {
+        saveClip(clip.copy(videoFilter = filter))
+    }
+
     fun updateCaptionStyle(clip: ViralClip, style: CaptionStylePreset) {
         saveClip(clip.copy(captionStyle = style))
     }
@@ -196,42 +237,21 @@ class ClipEditorViewModel(
     }
 
     fun openExportDialog(clip: ViralClip) {
-        val currentProject = project.value
-        if (currentProject != null && currentProject.isYouTubeOnly && !currentProject.youtubeVideoId.isNullOrBlank()) {
-            _exportState.value = ExportUiState.YouTubeOptions(
-                clip = clip,
-                youtubeVideoId = currentProject.youtubeVideoId,
-                srtContent = YouTubeSupport.generateSrt(clip.captions, clip.captionUppercase)
-            )
-            return
-        }
-        val isDemo = currentProject?.isDemo == true
-        _exportState.value = ExportUiState.Configure(
-            clip = clip,
-            resolution = ExportResolution.HD_1080P,
-            isDemoMode = isDemo
-        )
+        exportCoordinator.openExportDialog(clip = clip, project = project.value)
     }
 
     fun attachLocalVideo(localUri: Uri, continueToExportClip: ViralClip? = null) {
         viewModelScope.launch {
-            val currentExport = _exportState.value
-            if (currentExport is ExportUiState.YouTubeOptions) {
-                _exportState.value = currentExport.copy(isAttachingLocalVideo = true)
-            }
+            exportCoordinator.setYouTubeAttaching(true)
             try {
                 repository.attachLocalVideoToProject(projectId, localUri)
                 if (continueToExportClip != null) {
-                    _exportState.value = ExportUiState.Configure(
-                        clip = continueToExportClip,
-                        resolution = ExportResolution.HD_1080P,
-                        isDemoMode = false
-                    )
+                    exportCoordinator.openConfigureAfterAttach(continueToExportClip)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to attach local video to YouTube project", e)
                 if (continueToExportClip != null) {
-                    _exportState.value = ExportUiState.Error(
+                    exportCoordinator.showImmediateError(
                         clip = continueToExportClip,
                         resolution = ExportResolution.HD_1080P,
                         message = e.localizedMessage ?: "Could not attach selected video file."
@@ -242,76 +262,36 @@ class ClipEditorViewModel(
     }
 
     fun selectExportResolution(resolution: ExportResolution) {
-        val current = _exportState.value
-        if (current is ExportUiState.Configure) {
-            _exportState.value = current.copy(resolution = resolution)
-        }
+        exportCoordinator.selectResolution(resolution)
+    }
+
+    fun setExportMinimized(minimized: Boolean) {
+        exportCoordinator.setMinimized(minimized)
+    }
+
+    fun togglePauseExport() {
+        exportCoordinator.togglePauseExport()
+    }
+
+    fun requestCancelExport() {
+        exportCoordinator.requestCancelConfirmation()
+    }
+
+    fun dismissCancelConfirmation() {
+        exportCoordinator.dismissCancelConfirmation()
+    }
+
+    fun confirmCancelExport() {
+        exportCoordinator.confirmCancelExport()
     }
 
     fun startExport() {
-        val config = _exportState.value as? ExportUiState.Configure ?: return
         val currentProject = project.value ?: return
-
-        exportJob?.cancel()
-        if (currentProject.isDemo) {
-            exportJob = viewModelScope.launch {
-                for (pct in 0..100 step 10) {
-                    _exportState.value = ExportUiState.DemoPreview(
-                        clip = config.clip,
-                        resolution = config.resolution,
-                        progressPercent = pct,
-                        isComplete = pct == 100
-                    )
-                    if (pct < 100) delay(120L)
-                }
-            }
-            return
-        }
-
-        exportJob = viewModelScope.launch {
-            _exportState.value = ExportUiState.Exporting(
-                clip = config.clip,
-                resolution = config.resolution,
-                progressPercent = 0
-            )
-            try {
-                val uri = media3Engine.exportClipToGallery(
-                    sourceUri = Uri.parse(currentProject.sourceUri),
-                    clip = config.clip,
-                    sourceWidth = currentProject.sourceWidth,
-                    sourceHeight = currentProject.sourceHeight,
-                    resolution = config.resolution
-                ) { percent ->
-                    _exportState.value = ExportUiState.Exporting(
-                        clip = config.clip,
-                        resolution = config.resolution,
-                        progressPercent = percent
-                    )
-                }
-                val updatedClip = config.clip.copy(lastExportedUri = uri.toString())
-                repository.updateClip(updatedClip)
-                _exportState.value = ExportUiState.Completed(
-                    clip = updatedClip,
-                    exportedUri = uri
-                )
-            } catch (e: CancellationException) {
-                _exportState.value = ExportUiState.Hidden
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "MP4 export failed", e)
-                _exportState.value = ExportUiState.Error(
-                    clip = config.clip,
-                    resolution = config.resolution,
-                    message = e.localizedMessage ?: "Export failed. Try 720p Fast or another video."
-                )
-            }
-        }
+        exportCoordinator.startForegroundExport(projectId = projectId, project = currentProject)
     }
 
     fun cancelOrDismissExport() {
-        exportJob?.cancel()
-        media3Engine.cancelActiveOperation()
-        _exportState.value = ExportUiState.Hidden
+        exportCoordinator.dismissIfInactive()
     }
 
     private fun saveClip(updated: ViralClip) {
@@ -320,18 +300,12 @@ class ClipEditorViewModel(
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        exportJob?.cancel()
-        media3Engine.cancelActiveOperation()
-    }
-
     companion object {
         fun factory(
             projectId: Long,
             repository: ClipRepository,
             faceAnalyzer: FaceReframeAnalyzer,
-            media3Engine: Media3Engine
+            exportCoordinator: VideoExportCoordinator
         ): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -339,7 +313,7 @@ class ClipEditorViewModel(
                     projectId = projectId,
                     repository = repository,
                     faceAnalyzer = faceAnalyzer,
-                    media3Engine = media3Engine
+                    exportCoordinator = exportCoordinator
                 ) as T
             }
         }

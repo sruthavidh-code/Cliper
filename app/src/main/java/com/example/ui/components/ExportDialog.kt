@@ -1,14 +1,22 @@
 package com.example.ui.components
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -22,32 +30,40 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MovieCreation
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.VideoLibrary
+import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,11 +72,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
+import com.example.media.ExportStage
 import com.example.media.YouTubeSupport
 import com.example.model.ExportResolution
+import com.example.model.VideoFilterPreset
 import com.example.model.ViralClip
 import com.example.model.formatTimeMs
 import com.example.ui.theme.BorderHairline
@@ -80,12 +100,54 @@ fun ExportPipelineDialog(
     onSelectResolution: (ExportResolution) -> Unit,
     onStartExport: () -> Unit,
     onAttachLocalVideo: (Uri, ViralClip) -> Unit,
+    onMinimize: () -> Unit,
+    onTogglePause: () -> Unit,
+    onRequestCancel: () -> Unit,
+    onDismissCancelConfirm: () -> Unit,
+    onConfirmCancel: () -> Unit,
     onCancelOrDismiss: () -> Unit,
     onBackToClips: () -> Unit
 ) {
-    if (state is ExportUiState.Hidden) return
+    // Safeguard 1: Keep screen awake while Media3 is actively rendering (release when paused)
+    KeepScreenAwakeEffect(keepAwake = state.isActiveRender && !state.isPausedRender)
 
     val context = LocalContext.current
+    var askedNotificationPermission by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        askedNotificationPermission = true
+        onStartExport()
+    }
+
+    val triggerStartWithNotificationCheck: () -> Unit = {
+        val needsRuntimeNotificationPrompt =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !askedNotificationPermission &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+
+        if (needsRuntimeNotificationPrompt) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            onStartExport()
+        }
+    }
+
+    if (state is ExportUiState.Hidden) return
+
+    val showCancelConfirmWhileMinimized = when (state) {
+        is ExportUiState.Exporting -> state.isMinimized && state.showCancelConfirmation
+        is ExportUiState.DemoPreview -> state.isMinimized && state.showCancelConfirmation
+        else -> false
+    }
+
+    // When minimized into the floating banner and no cancel prompt is open, hide the modal dialog
+    if (state.isMinimizedBannerVisible && !showCancelConfirmWhileMinimized) return
+
     val activeYtClip = (state as? ExportUiState.YouTubeOptions)?.clip
 
     val attachVideoLauncher = rememberLauncherForActivityResult(
@@ -103,13 +165,53 @@ fun ExportPipelineDialog(
         }
     }
 
+    if (showCancelConfirmWhileMinimized) {
+        val pct = when (state) {
+            is ExportUiState.Exporting -> state.progressPercent
+            is ExportUiState.DemoPreview -> state.progressPercent
+            else -> 0
+        }
+        val indeterminate = when (state) {
+            is ExportUiState.Exporting -> state.isIndeterminate
+            is ExportUiState.DemoPreview -> state.isIndeterminate
+            else -> false
+        }
+        Dialog(
+            onDismissRequest = onDismissCancelConfirm,
+            properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = true)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("export_cancel_confirm_dialog"),
+                shape = RoundedCornerShape(24.dp),
+                color = SurfaceCard,
+                border = BorderStroke(1.dp, ScoreCoral.copy(alpha = 0.55f))
+            ) {
+                Box(modifier = Modifier.padding(16.dp)) {
+                    CancelExportConfirmationCard(
+                        progressPercent = pct,
+                        isIndeterminate = indeterminate,
+                        onKeepRendering = onDismissCancelConfirm,
+                        onConfirmStop = onConfirmCancel
+                    )
+                }
+            }
+        }
+        return
+    }
+
     Dialog(
         onDismissRequest = {
-            if (state !is ExportUiState.Exporting) onCancelOrDismiss()
+            if (state.isActiveRender) {
+                onRequestCancel()
+            } else {
+                onCancelOrDismiss()
+            }
         },
         properties = DialogProperties(
-            dismissOnBackPress = state !is ExportUiState.Exporting,
-            dismissOnClickOutside = state !is ExportUiState.Exporting
+            dismissOnBackPress = true,
+            dismissOnClickOutside = !state.isActiveRender
         )
     ) {
         Surface(
@@ -378,8 +480,13 @@ fun ExportPipelineDialog(
                                         style = MaterialTheme.typography.titleLarge,
                                         color = Color.White
                                     )
+                                    val filterTag = if (state.clip.videoFilter != VideoFilterPreset.NONE) {
+                                        " • ${state.clip.videoFilter.shortLabel}"
+                                    } else {
+                                        ""
+                                    }
                                     Text(
-                                        text = "${state.clip.aspectRatio.shortLabel} • ${formatTimeMs(state.clip.clipDurationMs)} • ${state.clip.captionStyle.displayName}",
+                                        text = "${state.clip.aspectRatio.shortLabel} • ${formatTimeMs(state.clip.clipDurationMs)}$filterTag • ${state.clip.captionStyle.displayName}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -466,7 +573,7 @@ fun ExportPipelineDialog(
                         }
 
                         Button(
-                            onClick = onStartExport,
+                            onClick = triggerStartWithNotificationCheck,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(52.dp)
@@ -484,76 +591,56 @@ fun ExportPipelineDialog(
                 }
 
                 is ExportUiState.Exporting -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Text(
-                            text = "Rendering MP4 (${state.resolution.label})",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "Trimming clip, applying ${state.clip.aspectRatio.shortLabel} crop & burning ${state.clip.captionStyle.displayName} captions...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = "${state.progressPercent}%",
-                            style = MaterialTheme.typography.displaySmall,
-                            color = NeonLime
-                        )
-                        LinearProgressIndicator(
-                            progress = { (state.progressPercent / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(10.dp)
-                                .clip(RoundedCornerShape(999.dp)),
-                            color = NeonLime,
-                            trackColor = SurfaceElevated
-                        )
-                        TextButton(
-                            onClick = onCancelOrDismiss,
-                            modifier = Modifier.testTag("cancel_export_button")
-                        ) {
-                            Text("Cancel Export", color = ScoreCoral)
-                        }
-                    }
+                    ActiveRenderModalContent(
+                        title = if (state.isPaused) "Export Paused" else "Rendering MP4",
+                        clip = state.clip,
+                        resolution = state.resolution,
+                        stage = state.stage,
+                        progressPercent = state.progressPercent,
+                        isIndeterminate = state.isIndeterminate,
+                        elapsedMs = state.elapsedMs,
+                        estimatedRemainingMs = state.estimatedRemainingMs,
+                        hasCaptions = state.hasCaptions,
+                        isDemo = false,
+                        isPaused = state.isPaused,
+                        showCancelConfirmation = state.showCancelConfirmation,
+                        onMinimize = onMinimize,
+                        onTogglePause = onTogglePause,
+                        onRequestCancel = onRequestCancel,
+                        onKeepRendering = onDismissCancelConfirm,
+                        onConfirmStop = onConfirmCancel
+                    )
                 }
 
                 is ExportUiState.DemoPreview -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        if (!state.isComplete) {
-                            Text(
-                                text = "Demo Export Preview",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "${state.progressPercent}%",
-                                style = MaterialTheme.typography.displaySmall,
-                                color = NeonLime
-                            )
-                            LinearProgressIndicator(
-                                progress = { (state.progressPercent / 100f).coerceIn(0f, 1f) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(10.dp)
-                                    .clip(RoundedCornerShape(999.dp)),
-                                color = NeonLime,
-                                trackColor = SurfaceElevated
-                            )
-                        } else {
+                    if (!state.isComplete) {
+                        ActiveRenderModalContent(
+                            title = if (state.isPaused) "Demo Export Paused" else "Demo Export Preview",
+                            clip = state.clip,
+                            resolution = state.resolution,
+                            stage = state.stage,
+                            progressPercent = state.progressPercent,
+                            isIndeterminate = state.isIndeterminate,
+                            elapsedMs = state.elapsedMs,
+                            estimatedRemainingMs = state.estimatedRemainingMs,
+                            hasCaptions = state.hasCaptions,
+                            isDemo = true,
+                            isPaused = state.isPaused,
+                            showCancelConfirmation = state.showCancelConfirmation,
+                            onMinimize = onMinimize,
+                            onTogglePause = onTogglePause,
+                            onRequestCancel = onRequestCancel,
+                            onKeepRendering = onDismissCancelConfirm,
+                            onConfirmStop = onConfirmCancel
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Rounded.CheckCircle,
                                 contentDescription = "Demo export preview complete",
@@ -565,6 +652,20 @@ fun ExportPipelineDialog(
                                 style = MaterialTheme.typography.titleLarge,
                                 color = Color.White
                             )
+                            if (state.elapsedMs > 0L) {
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = NeonLime.copy(alpha = 0.14f)
+                                ) {
+                                    Text(
+                                        text = "Previewed in ${formatDurationClock(state.elapsedMs)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeonLime,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
                             Text(
                                 text = "Your ${state.resolution.label} (${state.clip.aspectRatio.shortLabel}) settings are ready. Import a real video from the Studio Dashboard to render and save a gallery MP4 to Movies/ClipPulse.",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -609,6 +710,20 @@ fun ExportPipelineDialog(
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
+                        if (state.totalRenderMs > 0L) {
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = NeonLime.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = "Rendered in ${formatDurationClock(state.totalRenderMs)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NeonLime,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                         Text(
                             text = state.clip.title,
                             style = MaterialTheme.typography.bodyMedium,
@@ -699,7 +814,7 @@ fun ExportPipelineDialog(
                         Button(
                             onClick = {
                                 onSelectResolution(ExportResolution.FAST_720P)
-                                onStartExport()
+                                triggerStartWithNotificationCheck()
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -708,7 +823,7 @@ fun ExportPipelineDialog(
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = ElectricViolet)
                         ) {
-                            Text("Try Again", color = Color.White)
+                            Text("Retry in 720p Fast", color = Color.White)
                         }
                         TextButton(onClick = onCancelOrDismiss) {
                             Text("Close", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -717,6 +832,269 @@ fun ExportPipelineDialog(
                 }
 
                 ExportUiState.Hidden -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveRenderModalContent(
+    title: String,
+    clip: ViralClip,
+    resolution: ExportResolution,
+    stage: ExportStage,
+    progressPercent: Int,
+    isIndeterminate: Boolean,
+    elapsedMs: Long,
+    estimatedRemainingMs: Long?,
+    hasCaptions: Boolean,
+    isDemo: Boolean,
+    isPaused: Boolean,
+    showCancelConfirmation: Boolean,
+    onMinimize: () -> Unit,
+    onTogglePause: () -> Unit,
+    onRequestCancel: () -> Unit,
+    onKeepRendering: () -> Unit,
+    onConfirmStop: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Header with Minimize-to-Banner action
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (isPaused) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(ScoreAmber.copy(alpha = 0.2f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "PAUSED",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = ScoreAmber
+                            )
+                        }
+                    } else if (isDemo) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(ScoreAmber.copy(alpha = 0.18f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "DEMO",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = ScoreAmber
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = clip.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Surface(
+                modifier = Modifier
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onMinimize)
+                    .testTag("minimize_export_button"),
+                shape = RoundedCornerShape(12.dp),
+                color = SurfaceElevated,
+                border = BorderStroke(1.dp, BorderHairline)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = "Minimize export to floating banner",
+                        tint = ElectricVioletLight,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Minimize",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+
+        // Animated circular gradient ring
+        ExportProgressRing(
+            progressPercent = progressPercent,
+            isIndeterminate = isIndeterminate,
+            stage = stage,
+            isDemo = isDemo,
+            isPaused = isPaused
+        )
+
+        // Elapsed, ETA & Output Specs
+        ExportTelemetryStrip(
+            elapsedMs = elapsedMs,
+            estimatedRemainingMs = estimatedRemainingMs,
+            clip = clip,
+            resolution = resolution,
+            isPaused = isPaused
+        )
+
+        // 4-Stage Media3 Pipeline Checklist
+        ExportStageChecklist(
+            stage = stage,
+            hasCaptions = hasCaptions,
+            videoFilter = clip.videoFilter,
+            progressPercent = progressPercent,
+            isIndeterminate = isIndeterminate,
+            isPaused = isPaused
+        )
+
+        // Foreground service reassurance pill
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.WbSunny,
+                contentDescription = null,
+                tint = if (isPaused) ScoreAmber else NeonLime.copy(alpha = 0.85f),
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = if (isPaused) {
+                    "Export paused in foreground service • Resume anytime"
+                } else {
+                    "Foreground service active • Control via notification or minimize"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        // Cancel Confirmation Safeguard or Pause/Resume + Cancel Controls
+        AnimatedVisibility(
+            visible = showCancelConfirmation,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            CancelExportConfirmationCard(
+                progressPercent = progressPercent,
+                isIndeterminate = isIndeterminate,
+                onKeepRendering = onKeepRendering,
+                onConfirmStop = onConfirmStop
+            )
+        }
+
+        if (!showCancelConfirmation) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (isPaused) {
+                    Button(
+                        onClick = onTogglePause,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("pause_resume_export_button"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonLime)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Resume export",
+                            tint = CharcoalBg,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Resume",
+                            color = CharcoalBg,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onTogglePause,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("pause_resume_export_button"),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, ScoreAmber.copy(alpha = 0.65f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Pause,
+                            contentDescription = "Pause export",
+                            tint = ScoreAmber,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Pause",
+                            color = ScoreAmber,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onRequestCancel,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("cancel_export_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, ScoreCoral.copy(alpha = 0.6f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Cancel export",
+                        tint = ScoreCoral,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Cancel",
+                        color = ScoreCoral,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }

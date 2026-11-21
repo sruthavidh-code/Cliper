@@ -50,4 +50,26 @@ interface ClipPulseDao {
 
     @Query("DELETE FROM viral_clips WHERE projectId = :projectId")
     suspend fun deleteClipsForProject(projectId: Long)
+
+    // Export History Vault (Metadata + Thumbnails)
+    @Query("SELECT * FROM exported_clips ORDER BY exportedAtMs DESC")
+    fun observeAllExports(): Flow<List<ExportedClipEntity>>
+
+    @Query("SELECT COUNT(*) FROM exported_clips")
+    fun observeTotalExportCount(): Flow<Int>
+
+    @Query("SELECT * FROM exported_clips WHERE projectId = :projectId ORDER BY exportedAtMs DESC")
+    fun observeExportsForProject(projectId: Long): Flow<List<ExportedClipEntity>>
+
+    @Query("SELECT * FROM exported_clips WHERE id = :exportId LIMIT 1")
+    suspend fun getExportById(exportId: Long): ExportedClipEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertExport(record: ExportedClipEntity): Long
+
+    @Query("DELETE FROM exported_clips WHERE id = :exportId")
+    suspend fun deleteExportById(exportId: Long)
+
+    @Query("DELETE FROM exported_clips")
+    suspend fun clearAllExports()
 }

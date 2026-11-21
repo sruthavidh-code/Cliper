@@ -11,6 +11,8 @@ import com.example.data.local.toDomain
 import com.example.data.local.toEntity
 import com.example.media.YouTubeVideoMetadata
 import com.example.model.ClipConfig
+import com.example.model.ExportResolution
+import com.example.model.ExportedClipRecord
 import com.example.model.ProjectStatus
 import com.example.model.VideoProject
 import com.example.model.ViralClip
@@ -41,6 +43,11 @@ class ClipRepository(
         .map { list -> list.map { it.toDomain() } }
 
     val totalClipCount: Flow<Int> = dao.observeTotalClipCount()
+
+    val allExports: Flow<List<ExportedClipRecord>> = dao.observeAllExports()
+        .map { list -> list.map { it.toDomain() } }
+
+    val totalExportCount: Flow<Int> = dao.observeTotalExportCount()
 
     fun observeProject(projectId: Long): Flow<VideoProject?> =
         dao.observeProject(projectId).map { it?.toDomain() }
@@ -147,6 +154,118 @@ class ClipRepository(
 
     suspend fun deleteProject(projectId: Long) {
         dao.deleteProject(projectId)
+    }
+
+    /**
+     * Persists export metadata & extracts a crisp JPEG thumbnail from the rendered MP4
+     * into app-private storage (zero broad storage permissions required).
+     */
+    suspend fun recordExportedClip(
+        projectId: Long,
+        clip: ViralClip,
+        exportedUri: String,
+        resolution: ExportResolution,
+        renderDurationMs: Long,
+        isDemo: Boolean
+    ): ExportedClipRecord = withContext(Dispatchers.IO) {
+        var fileSizeBytes = 0L
+        var thumbnailPath: String? = null
+
+        if (!isDemo && exportedUri.isNotBlank()) {
+            val uri = Uri.parse(exportedUri)
+            fileSizeBytes = queryExportFileSize(uri)
+            thumbnailPath = extractExportThumbnail(uri, clip.clipDurationMs)
+        }
+
+        val record = ExportedClipRecord(
+            projectId = projectId,
+            clipId = clip.id,
+            title = clip.title,
+            exportedUri = exportedUri,
+            thumbnailPath = thumbnailPath,
+            durationMs = clip.clipDurationMs,
+            fileSizeBytes = fileSizeBytes,
+            resolution = resolution,
+            aspectRatio = clip.aspectRatio,
+            captionStyle = clip.captionStyle,
+            videoFilter = clip.videoFilter,
+            renderDurationMs = renderDurationMs.coerceAtLeast(0L),
+            isDemo = isDemo,
+            exportedAtMs = System.currentTimeMillis()
+        )
+        val insertedId = dao.insertExport(record.toEntity())
+        record.copy(id = insertedId)
+    }
+
+    suspend fun deleteExport(exportId: Long) = withContext(Dispatchers.IO) {
+        val existing = dao.getExportById(exportId)
+        existing?.thumbnailPath?.let { path ->
+            runCatching { File(path).delete() }
+        }
+        dao.deleteExportById(exportId)
+    }
+
+    suspend fun clearAllExports() = withContext(Dispatchers.IO) {
+        runCatching {
+            File(context.filesDir, "export_thumbs").listFiles()?.forEach { it.delete() }
+        }
+        dao.clearAllExports()
+    }
+
+    private fun queryExportFileSize(uri: Uri): Long {
+        return try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+                if (afd.length >= 0L) afd.length else 0L
+            } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun extractExportThumbnail(uri: Uri, durationMs: Long): String? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            // Sample ~25% into the exported clip so burned captions & color grading are visible
+            val sampleMs = (durationMs * 0.25).toLong().coerceIn(400L, 4_000L)
+            val frame = retriever.getFrameAtTime(
+                sampleMs * 1_000L,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            ) ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+
+            if (frame != null) {
+                val scaled = scaleThumbnailBitmap(frame, maxEdgePx = 420)
+                val thumbDir = File(context.filesDir, "export_thumbs").apply { mkdirs() }
+                val outFile = File(thumbDir, "export_${System.currentTimeMillis()}.jpg")
+                FileOutputStream(outFile).use { fos ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, 84, fos)
+                }
+                if (scaled !== frame) {
+                    scaled.recycle()
+                }
+                frame.recycle()
+                outFile.absolutePath
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to extract thumbnail from exported MP4", e)
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun scaleThumbnailBitmap(source: Bitmap, maxEdgePx: Int): Bitmap {
+        val maxSide = maxOf(source.width, source.height)
+        if (maxSide <= maxEdgePx) return source
+        val scale = maxEdgePx.toFloat() / maxSide.toFloat()
+        val targetW = (source.width * scale).toInt().coerceAtLeast(1)
+        val targetH = (source.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(source, targetW, targetH, true)
     }
 
     suspend fun ensureDemoProject(): Long {

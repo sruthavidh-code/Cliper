@@ -6,11 +6,14 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.ClipRepository
 import com.example.data.ImportedVideoMetadata
+import com.example.media.GeneratedSampleVideo
+import com.example.media.SampleVideoGenerator
 import com.example.media.YouTubeSupport
 import com.example.media.YouTubeVideoMetadata
 import com.example.model.AspectRatioOption
 import com.example.model.CaptionStylePreset
 import com.example.model.ClipConfig
+import com.example.model.ExportedClipRecord
 import com.example.model.TargetDuration
 import com.example.model.VideoProject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,11 +39,15 @@ data class DashboardUiState(
     val isFetchingYouTube: Boolean = false,
     val youtubeError: String? = null,
     val previewYouTubeMetadata: YouTubeVideoMetadata? = null,
+    val isGeneratingSampleVideo: Boolean = false,
+    val sampleGenerationProgress: Int = 0,
+    val generatedSampleNotification: GeneratedSampleVideo? = null,
     val errorMessage: String? = null
 )
 
 class DashboardViewModel(
-    private val repository: ClipRepository
+    private val repository: ClipRepository,
+    private val sampleVideoGenerator: SampleVideoGenerator
 ) : ViewModel() {
 
     val projects: StateFlow<List<VideoProject>> = repository.allProjects
@@ -49,8 +56,62 @@ class DashboardViewModel(
     val totalClipCount: StateFlow<Int> = repository.totalClipCount
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), 0)
 
+    val recentExports: StateFlow<List<ExportedClipRecord>> = repository.allExports
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), emptyList())
+
+    val totalExportCount: StateFlow<Int> = repository.totalExportCount
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), 0)
+
     private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
+
+    init {
+        if (!sampleVideoGenerator.isInitialSampleSeeded()) {
+            generateRandomSampleVideo(isAutoSeed = true)
+        }
+    }
+
+    fun generateRandomSampleVideo(isAutoSeed: Boolean = false) {
+        if (_uiState.value.isGeneratingSampleVideo) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isGeneratingSampleVideo = true,
+                    sampleGenerationProgress = 0,
+                    errorMessage = null
+                )
+            }
+            try {
+                val generated = sampleVideoGenerator.generateRandomFiveMinuteVideo { pct ->
+                    _uiState.update { it.copy(sampleGenerationProgress = pct) }
+                }
+                sampleVideoGenerator.markInitialSampleSeeded()
+                _uiState.update {
+                    it.copy(
+                        isGeneratingSampleVideo = false,
+                        sampleGenerationProgress = 100,
+                        generatedSampleNotification = generated
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isGeneratingSampleVideo = false,
+                        sampleGenerationProgress = 0,
+                        errorMessage = if (isAutoSeed) {
+                            null
+                        } else {
+                            e.localizedMessage ?: "Failed to generate 5-minute video."
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun consumeGeneratedSampleNotification() {
+        _uiState.update { it.copy(generatedSampleNotification = null) }
+    }
 
     fun onVideoSelected(uri: Uri) {
         viewModelScope.launch {
@@ -243,16 +304,31 @@ class DashboardViewModel(
         }
     }
 
+    fun deleteExport(exportId: Long) {
+        viewModelScope.launch {
+            repository.deleteExport(exportId)
+        }
+    }
+
+    fun clearAllExports() {
+        viewModelScope.launch {
+            repository.clearAllExports()
+        }
+    }
+
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null) }
     }
 
     companion object {
-        fun factory(repository: ClipRepository): ViewModelProvider.Factory =
+        fun factory(
+            repository: ClipRepository,
+            sampleVideoGenerator: SampleVideoGenerator
+        ): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return DashboardViewModel(repository) as T
+                    return DashboardViewModel(repository, sampleVideoGenerator) as T
                 }
             }
     }

@@ -17,6 +17,8 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
 private const val TAG = "GeminiClipAnalyzer"
+const val GEMINI_FLASH_MODEL = "gemini-3.8-flash"
+private const val VIDEO_ANALYSIS_TIMEOUT_MS = 120_000L
 
 private const val VIRAL_EDITOR_SYSTEM_INSTRUCTION =
     "You are an expert short-form viral video editor specializing in TikTok, Instagram Reels, and YouTube Shorts. Analyze the provided video and identify the highest-retention standalone moments.\n\n" +
@@ -74,7 +76,7 @@ class GeminiClipAnalyzer {
 
     private val model by lazy {
         Firebase.ai.generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = GEMINI_FLASH_MODEL,
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = this@GeminiClipAnalyzer.responseSchema
@@ -94,7 +96,8 @@ class GeminiClipAnalyzer {
         targetDuration: TargetDuration,
         aspectRatio: AspectRatioOption,
         defaultCaptionStyle: CaptionStylePreset,
-        focusKeywords: String
+        focusKeywords: String,
+        onStreamingProgress: (charsReceived: Int) -> Unit = {}
     ): List<ViralClip> {
         val focusClause = if (focusKeywords.isNotBlank()) {
             "Prioritize moments touching these user focus keywords/topics: \"$focusKeywords\"."
@@ -104,25 +107,34 @@ class GeminiClipAnalyzer {
 
         val prompt = buildString {
             appendLine("Analyze this video (exact total duration: ${durationMs} ms).")
-            appendLine("Return 3 to 5 ranked short clips sorted from highest to lowest viralityScore.")
+            appendLine("Return 3 to 4 ranked short clips sorted from highest to lowest viralityScore.")
             appendLine("Target clip length rule: ${targetDuration.promptGuidance}.")
             appendLine(focusClause)
             appendLine("CRITICAL: Every startMs and endMs MUST lie strictly between 0 and $durationMs ms, with endMs > startMs.")
-            appendLine("For every clip, generate complete timestamped caption chunks (startMs and endMs relative to 0..clipDurationMs).")
+            appendLine("For each clip, generate 6 to 10 punchy timestamped caption chunks (startMs and endMs relative to 0..clipDurationMs).")
         }
 
         try {
-            val response = withTimeout(60_000L) {
-                model.generateContent(
+            val accumulated = StringBuilder()
+            withTimeout(VIDEO_ANALYSIS_TIMEOUT_MS) {
+                model.generateContentStream(
                     content {
                         inlineData(videoBytes, mimeType)
                         text(prompt)
                     }
-                )
+                ).collect { chunk ->
+                    val piece = chunk.text
+                    if (!piece.isNullOrEmpty()) {
+                        accumulated.append(piece)
+                        onStreamingProgress(accumulated.length)
+                    }
+                }
             }
 
-            val rawJson = response.text?.trim()
-                ?: throw IllegalStateException("Gemini returned an empty response. Please retry analysis.")
+            val rawJson = accumulated.toString().trim()
+            if (rawJson.isEmpty()) {
+                throw IllegalStateException("Gemini returned an empty response. Please retry analysis.")
+            }
 
             val parsed = parseClipsJson(
                 rawJson = rawJson,
@@ -140,7 +152,7 @@ class GeminiClipAnalyzer {
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Gemini video analysis timed out", e)
             throw IllegalStateException(
-                "AI analysis timed out after 60 seconds. Try a shorter clip or tap Retry.",
+                "AI analysis timed out after 2 minutes. Check your connection or tap Retry.",
                 e
             )
         } catch (e: CancellationException) {
@@ -160,7 +172,8 @@ class GeminiClipAnalyzer {
         targetDuration: TargetDuration,
         aspectRatio: AspectRatioOption,
         defaultCaptionStyle: CaptionStylePreset,
-        focusKeywords: String
+        focusKeywords: String,
+        onStreamingProgress: (charsReceived: Int) -> Unit = {}
     ): YouTubeAnalysisResult {
         val focusClause = if (focusKeywords.isNotBlank()) {
             "Prioritize moments touching these user focus keywords/topics: \"$focusKeywords\"."
@@ -171,25 +184,34 @@ class GeminiClipAnalyzer {
         val prompt = buildString {
             appendLine("Analyze this public YouTube video carefully.")
             appendLine("Include its exact total duration in milliseconds as videoDurationMs.")
-            appendLine("Return 3 to 5 ranked short clips sorted from highest to lowest viralityScore.")
+            appendLine("Return 3 to 4 ranked short clips sorted from highest to lowest viralityScore.")
             appendLine("Target clip length rule: ${targetDuration.promptGuidance}.")
             appendLine(focusClause)
             appendLine("CRITICAL: Every startMs and endMs MUST accurately match the spoken moments in the YouTube video, with endMs > startMs.")
-            appendLine("For every clip, generate complete timestamped caption chunks (startMs and endMs relative to 0..clipDurationMs).")
+            appendLine("For each clip, generate 6 to 10 punchy timestamped caption chunks (startMs and endMs relative to 0..clipDurationMs).")
         }
 
         try {
-            val response = withTimeout(60_000L) {
-                model.generateContent(
+            val accumulated = StringBuilder()
+            withTimeout(VIDEO_ANALYSIS_TIMEOUT_MS) {
+                model.generateContentStream(
                     content {
                         fileData(youtubeUrl, "video/mp4")
                         text(prompt)
                     }
-                )
+                ).collect { chunk ->
+                    val piece = chunk.text
+                    if (!piece.isNullOrEmpty()) {
+                        accumulated.append(piece)
+                        onStreamingProgress(accumulated.length)
+                    }
+                }
             }
 
-            val rawJson = response.text?.trim()
-                ?: throw IllegalStateException("Gemini returned an empty response for this YouTube video. Please retry.")
+            val rawJson = accumulated.toString().trim()
+            if (rawJson.isEmpty()) {
+                throw IllegalStateException("Gemini returned an empty response for this YouTube video. Please retry.")
+            }
 
             val root = try {
                 JSONObject(rawJson)
@@ -233,7 +255,7 @@ class GeminiClipAnalyzer {
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Gemini YouTube analysis timed out", e)
             throw IllegalStateException(
-                "AI analysis timed out after 60 seconds. Longer YouTube videos may need a retry.",
+                "AI analysis timed out after 2 minutes. Longer YouTube videos may need a retry.",
                 e
             )
         } catch (e: CancellationException) {

@@ -58,8 +58,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
+import com.example.media.VideoFilterEffects
 import com.example.media.YouTubeSupport
 import com.example.model.AspectRatioOption
+import com.example.model.VideoFilterPreset
 import com.example.model.ViralClip
 import com.example.model.formatTimePreciseMs
 import com.example.ui.theme.BorderHairline
@@ -93,6 +95,7 @@ fun YouTubeEmbedPlayerSurface(
     clip: ViralClip,
     isPlaying: Boolean,
     relativePositionMs: Long,
+    videoFilter: VideoFilterPreset = clip.videoFilter,
     onRelativePositionUpdate: (Long) -> Unit,
     onAttachLocalVideoClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -148,7 +151,12 @@ fun YouTubeEmbedPlayerSurface(
             addJavascriptInterface(bridge, "ClipPulseBridge")
             loadDataWithBaseURL(
                 "https://www.youtube.com",
-                buildYouTubePlayerHtml(videoId, startSecInitial, endSecInitial),
+                buildYouTubePlayerHtml(
+                    videoId = videoId,
+                    startSec = startSecInitial,
+                    endSec = endSecInitial,
+                    initialCssFilter = VideoFilterEffects.cssFilterRule(videoFilter)
+                ),
                 "text/html",
                 "utf-8",
                 null
@@ -161,6 +169,14 @@ fun YouTubeEmbedPlayerSurface(
         val endSec = clip.endMs / 1000.0
         webView.evaluateJavascript(
             "if(window.clipPulseSync){window.clipPulseSync($startSec,$endSec,$isPlaying);}",
+            null
+        )
+    }
+
+    LaunchedEffect(webView, videoFilter) {
+        val cssFilter = VideoFilterEffects.cssFilterRule(videoFilter)
+        webView.evaluateJavascript(
+            "if(window.clipPulseSetFilter){window.clipPulseSetFilter('$cssFilter');}",
             null
         )
     }
@@ -182,9 +198,14 @@ fun YouTubeEmbedPlayerSurface(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            webView.stopLoading()
-            webView.removeJavascriptInterface("ClipPulseBridge")
-            webView.destroy()
+            runCatching {
+                webView.onPause()
+                webView.stopLoading()
+                webView.loadUrl("about:blank")
+                webView.removeJavascriptInterface("ClipPulseBridge")
+                (webView.parent as? ViewGroup)?.removeView(webView)
+                webView.destroy()
+            }
         }
     }
 
@@ -203,6 +224,13 @@ fun YouTubeEmbedPlayerSurface(
     ) {
         AndroidView(
             factory = { webView },
+            onRelease = { view ->
+                runCatching {
+                    view.onPause()
+                    view.stopLoading()
+                    (view.parent as? ViewGroup)?.removeView(view)
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -319,7 +347,12 @@ private fun YouTubeEmbedFallbackCard(
     }
 }
 
-private fun buildYouTubePlayerHtml(videoId: String, startSec: Double, endSec: Double): String {
+private fun buildYouTubePlayerHtml(
+    videoId: String,
+    startSec: Double,
+    endSec: Double,
+    initialCssFilter: String
+): String {
     val safeId = videoId.replace(Regex("[^A-Za-z0-9_-]"), "")
     return """
         <!DOCTYPE html>
@@ -334,6 +367,8 @@ private fun buildYouTubePlayerHtml(videoId: String, startSec: Double, endSec: Do
             #player {
               position: fixed; inset: 0; width: 100%; height: 100%;
               pointer-events: none;
+              filter: $initialCssFilter;
+              -webkit-filter: $initialCssFilter;
             }
           </style>
         </head>
@@ -422,6 +457,14 @@ private fun buildYouTubePlayerHtml(videoId: String, startSec: Double, endSec: Do
               shouldPlay = false;
               if (player && typeof player.pauseVideo === 'function') {
                 player.pauseVideo();
+              }
+            };
+
+            window.clipPulseSetFilter = function(filterCss) {
+              var el = document.getElementById('player');
+              if (el) {
+                el.style.filter = filterCss;
+                el.style.webkitFilter = filterCss;
               }
             };
           </script>

@@ -40,9 +40,46 @@ enum class CaptionStylePreset(val displayName: String, val description: String) 
     }
 }
 
+enum class VideoFilterPreset(
+    val displayName: String,
+    val shortLabel: String,
+    val description: String
+) {
+    NONE(
+        displayName = "Original",
+        shortLabel = "Original",
+        description = "Natural unprocessed footage colors"
+    ),
+    BLACK_AND_WHITE(
+        displayName = "Black & White",
+        shortLabel = "B&W",
+        description = "Crisp monochrome via Media3 RgbFilter"
+    ),
+    HIGH_CONTRAST(
+        displayName = "High Contrast",
+        shortLabel = "High Contrast",
+        description = "Deep shadows, vivid highlights & punch"
+    ),
+    DRAMATIC_NOIR(
+        displayName = "Noir B&W",
+        shortLabel = "Noir",
+        description = "High-contrast cinematic monochrome"
+    );
+
+    companion object {
+        fun fromName(name: String): VideoFilterPreset =
+            entries.firstOrNull { it.name == name } ?: NONE
+    }
+}
+
 enum class ExportResolution(val label: String, val subtitle: String, val shortEdgePx: Int) {
     FAST_720P("720p Fast", "Quicker render, crisp mobile upload", 720),
-    HD_1080P("1080p HD", "Maximum sharpness for Reels & Shorts", 1080)
+    HD_1080P("1080p HD", "Maximum sharpness for Reels & Shorts", 1080);
+
+    companion object {
+        fun fromName(name: String): ExportResolution =
+            entries.firstOrNull { it.name == name } ?: HD_1080P
+    }
 }
 
 enum class ProjectStatus(val displayLabel: String) {
@@ -115,12 +152,31 @@ data class ViralClip(
     val captionStyle: CaptionStylePreset = CaptionStylePreset.HORMOZI_BOLD,
     val captionYPosition: Float = 0.74f,
     val captionUppercase: Boolean = true,
+    val videoFilter: VideoFilterPreset = VideoFilterPreset.NONE,
     val lastExportedUri: String? = null
 ) {
     val clipDurationMs: Long get() = (endMs - startMs).coerceAtLeast(1_000L)
     val effectivePanX: Float
         get() = (if (autoFaceTrackEnabled) faceCenterX else manualPanX).coerceIn(-1f, 1f)
 }
+
+data class ExportedClipRecord(
+    val id: Long = 0L,
+    val projectId: Long? = null,
+    val clipId: Long? = null,
+    val title: String,
+    val exportedUri: String,
+    val thumbnailPath: String? = null,
+    val durationMs: Long,
+    val fileSizeBytes: Long = 0L,
+    val resolution: ExportResolution = ExportResolution.HD_1080P,
+    val aspectRatio: AspectRatioOption = AspectRatioOption.VERTICAL_9_16,
+    val captionStyle: CaptionStylePreset = CaptionStylePreset.HORMOZI_BOLD,
+    val videoFilter: VideoFilterPreset = VideoFilterPreset.NONE,
+    val renderDurationMs: Long = 0L,
+    val isDemo: Boolean = false,
+    val exportedAtMs: Long = System.currentTimeMillis()
+)
 
 object ClipJsonCodec {
     fun encodeHashtags(tags: List<String>): String {

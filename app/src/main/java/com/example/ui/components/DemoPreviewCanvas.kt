@@ -16,14 +16,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.unit.dp
+import com.example.media.VideoFilterEffects
+import com.example.model.VideoFilterPreset
 import com.example.model.formatTimePreciseMs
 import com.example.ui.theme.CharcoalBg
 import com.example.ui.theme.ElectricViolet
@@ -45,18 +51,35 @@ fun DemoPreviewCanvas(
     panX: Float,
     zoomScale: Float,
     autoFaceTrackEnabled: Boolean,
+    videoFilter: VideoFilterPreset = VideoFilterPreset.NONE,
     clipSeed: Int = 0,
     compactThumbnail: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val phase = (relativePositionMs / 240f) + clipSeed * 1.7f
+    val activeColorFilter = VideoFilterEffects.composeColorFilter(videoFilter)
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(CharcoalBg)
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    if (activeColorFilter == null) {
+                        drawContent()
+                    } else {
+                        drawIntoCanvas { canvas ->
+                            val paint = Paint().apply { colorFilter = activeColorFilter }
+                            canvas.saveLayer(Rect(Offset.Zero, size), paint)
+                            drawContent()
+                            canvas.restore()
+                        }
+                    }
+                }
+        ) {
             val w = size.width
             val h = size.height
 

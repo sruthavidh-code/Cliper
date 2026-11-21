@@ -83,11 +83,11 @@ class AnalysisViewModel(
                     )
                     delay(280L)
 
-                    // Stage 2: Detect high-retention hooks directly via Gemini fileData
+                    // Stage 2: Detect high-retention hooks directly via Gemini Flash fileData
                     _uiState.value = AnalysisUiState.Running(
                         projectTitle = project.title,
                         activeStageIndex = 1,
-                        stageSubtitle = "Streaming YouTube link to Gemini AI for viral hook detection..."
+                        stageSubtitle = "Streaming YouTube link to Gemini Flash for viral hook detection..."
                     )
                     val ytResult = geminiAnalyzer.analyzeYouTubeVideo(
                         youtubeUrl = project.youtubeUrl,
@@ -96,7 +96,13 @@ class AnalysisViewModel(
                         aspectRatio = project.aspectRatio,
                         defaultCaptionStyle = project.defaultCaptionStyle,
                         focusKeywords = project.focusKeywords
-                    )
+                    ) { chars ->
+                        _uiState.value = AnalysisUiState.Running(
+                            projectTitle = project.title,
+                            activeStageIndex = 1,
+                            stageSubtitle = "Streaming viral clip timestamps from Gemini Flash ($chars chars)..."
+                        )
+                    }
 
                     // Stage 3: Score viral potential & verify synced caption chunks
                     _uiState.value = AnalysisUiState.Running(
@@ -145,14 +151,14 @@ class AnalysisViewModel(
                     )
                 }
 
-                // Stage 2: Detect high-retention hooks with Firebase AI Logic (Gemini)
+                // Stage 2: Detect high-retention hooks with Firebase AI Logic (Gemini Flash)
                 _uiState.value = AnalysisUiState.Running(
                     projectTitle = project.title,
                     activeStageIndex = 1,
                     stageSubtitle = if (payload.wasCompressedProxy) {
-                        "Compact AI proxy ready. Scanning video for 3-second viral hooks..."
+                        "Compact AI proxy ready. Scanning with Gemini Flash for 3-second viral hooks..."
                     } else {
-                        "Scanning video audio & visuals for high-retention hooks..."
+                        "Scanning video audio & visuals with Gemini Flash for high-retention hooks..."
                     }
                 )
 
@@ -165,7 +171,13 @@ class AnalysisViewModel(
                     aspectRatio = project.aspectRatio,
                     defaultCaptionStyle = project.defaultCaptionStyle,
                     focusKeywords = project.focusKeywords
-                )
+                ) { chars ->
+                    _uiState.value = AnalysisUiState.Running(
+                        projectTitle = project.title,
+                        activeStageIndex = 1,
+                        stageSubtitle = "Streaming viral hooks & captions from Gemini Flash ($chars chars)..."
+                    )
+                }
 
                 // Stage 3: Score viral potential & verify synced caption chunks
                 _uiState.value = AnalysisUiState.Running(

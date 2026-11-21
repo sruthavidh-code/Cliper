@@ -44,7 +44,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
 
-        appContainer = AppContainer(applicationContext)
+        appContainer = AppContainer.getInstance(applicationContext)
 
         setContent {
             ClipPulseTheme {
@@ -64,7 +64,10 @@ private fun ClipPulseNavGraph(appContainer: AppContainer) {
     ) {
         composable(ROUTE_DASHBOARD) {
             val dashboardVm: DashboardViewModel = viewModel(
-                factory = DashboardViewModel.factory(appContainer.repository)
+                factory = DashboardViewModel.factory(
+                    repository = appContainer.repository,
+                    sampleVideoGenerator = appContainer.sampleVideoGenerator
+                )
             )
             DashboardScreen(
                 viewModel = dashboardVm,
@@ -73,6 +76,9 @@ private fun ClipPulseNavGraph(appContainer: AppContainer) {
                 },
                 onOpenClipsFeed = { projectId ->
                     navController.navigate("clips/$projectId")
+                },
+                onOpenClipEditor = { projectId, clipId ->
+                    navController.navigate("editor/$projectId/$clipId")
                 }
             )
         }
@@ -114,7 +120,7 @@ private fun ClipPulseNavGraph(appContainer: AppContainer) {
                     projectId = projectId,
                     repository = appContainer.repository,
                     faceAnalyzer = appContainer.faceReframeAnalyzer,
-                    media3Engine = appContainer.media3Engine
+                    exportCoordinator = appContainer.exportCoordinator
                 )
             )
             ClipsFeedScreen(
@@ -149,7 +155,7 @@ private fun ClipPulseNavGraph(appContainer: AppContainer) {
                     projectId = projectId,
                     repository = appContainer.repository,
                     faceAnalyzer = appContainer.faceReframeAnalyzer,
-                    media3Engine = appContainer.media3Engine
+                    exportCoordinator = appContainer.exportCoordinator
                 )
             )
             ClipEditorScreen(

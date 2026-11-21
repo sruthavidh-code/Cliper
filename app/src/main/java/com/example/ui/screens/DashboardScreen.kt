@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,8 +38,10 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MovieCreation
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
@@ -49,21 +52,27 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,16 +95,24 @@ import com.example.media.YouTubeVideoMetadata
 import com.example.model.AspectRatioOption
 import com.example.model.CaptionStylePreset
 import com.example.model.ClipConfig
+import com.example.model.ExportedClipRecord
 import com.example.model.ProjectStatus
 import com.example.model.TargetDuration
 import com.example.model.VideoProject
 import com.example.model.formatTimeMs
 import com.example.ui.components.CaptionStylePresetCard
 import com.example.ui.components.DemoPreviewCanvas
+import com.example.ui.components.ExportHistoryVaultSheet
+import com.example.ui.components.RecentExportsCarouselSection
+import com.example.ui.components.formatFileSizeCompact
+import com.example.ui.components.openExportedVideo
+import com.example.ui.components.shareClipMetadataText
+import com.example.ui.components.shareExportedVideo
 import com.example.ui.theme.BorderHairline
 import com.example.ui.theme.CharcoalBg
 import com.example.ui.theme.ElectricViolet
 import com.example.ui.theme.ElectricVioletLight
+import com.example.ui.theme.NeonCyan
 import com.example.ui.theme.NeonLime
 import com.example.ui.theme.ScoreAmber
 import com.example.ui.theme.ScoreCoral
@@ -104,6 +121,7 @@ import com.example.ui.theme.SurfaceElevated
 import com.example.ui.theme.SurfaceHighlight
 import com.example.ui.viewmodel.DashboardViewModel
 import com.example.ui.viewmodel.PendingImportSource
+import kotlinx.coroutines.launch
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,19 +129,85 @@ import java.io.File
 fun DashboardScreen(
     viewModel: DashboardViewModel,
     onOpenAnalysis: (Long) -> Unit,
-    onOpenClipsFeed: (Long) -> Unit
+    onOpenClipsFeed: (Long) -> Unit,
+    onOpenClipEditor: (Long, Long) -> Unit
 ) {
     val projects by viewModel.projects.collectAsStateWithLifecycle()
     val totalClips by viewModel.totalClipCount.collectAsStateWithLifecycle()
+    val recentExports by viewModel.recentExports.collectAsStateWithLifecycle()
+    val totalExports by viewModel.totalExportCount.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    var showExportVaultSheet by remember { mutableStateOf(false) }
+
+    val handlePlayExport: (ExportedClipRecord) -> Unit = { record ->
+        if (record.isDemo || record.exportedUri.startsWith("demo://")) {
+            val pid = record.projectId
+            val cid = record.clipId
+            if (pid != null && cid != null) {
+                showExportVaultSheet = false
+                onOpenClipEditor(pid, cid)
+            } else {
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("Demo preview export — import a local video for gallery MP4 playback.")
+                }
+            }
+        } else {
+            openExportedVideo(context, Uri.parse(record.exportedUri))
+        }
+    }
+
+    val handleShareExport: (ExportedClipRecord) -> Unit = { record ->
+        if (record.isDemo || record.exportedUri.startsWith("demo://")) {
+            shareClipMetadataText(
+                context = context,
+                title = "${record.title} (${record.resolution.label}, ${record.aspectRatio.shortLabel})",
+                hashtags = listOf("#ClipPulse", "#Shorts")
+            )
+        } else {
+            shareExportedVideo(context, Uri.parse(record.exportedUri), record.title)
+        }
+    }
+
+    val handleEditExport: (ExportedClipRecord) -> Unit = { record ->
+        val pid = record.projectId
+        val cid = record.clipId
+        if (pid != null && cid != null) {
+            showExportVaultSheet = false
+            onOpenClipEditor(pid, cid)
+        }
+    }
+
+    val handleDeleteExport: (ExportedClipRecord) -> Unit = { record ->
+        viewModel.deleteExport(record.id)
+        coroutineScope.launch {
+            snackbarHostState.showSnackbar("Removed from export history")
+        }
+    }
 
     LaunchedEffect(uiState.errorMessage) {
         val msg = uiState.errorMessage
         if (!msg.isNullOrBlank()) {
             snackbarHostState.showSnackbar(msg)
             viewModel.clearError()
+        }
+    }
+
+    LaunchedEffect(uiState.generatedSampleNotification) {
+        val sample = uiState.generatedSampleNotification
+        if (sample != null) {
+            val sizeLabel = formatFileSizeCompact(sample.fileSizeBytes)
+            val result = snackbarHostState.showSnackbar(
+                message = "Saved 5:00 video ($sizeLabel) to Android Media",
+                actionLabel = "Import",
+                duration = SnackbarDuration.Long
+            )
+            viewModel.consumeGeneratedSampleNotification()
+            if (result == SnackbarResult.ActionPerformed) {
+                viewModel.onVideoSelected(sample.uri)
+            }
         }
     }
 
@@ -161,12 +245,18 @@ fun DashboardScreen(
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 item {
-                    DashboardHeader(totalClips = totalClips)
+                    DashboardHeader(
+                        totalClips = totalClips,
+                        totalExports = totalExports,
+                        onOpenExportsVault = { showExportVaultSheet = true }
+                    )
                 }
 
                 item {
                     StudioHeroCard(
                         isExtracting = uiState.isExtractingMetadata,
+                        isGeneratingSample = uiState.isGeneratingSampleVideo,
+                        sampleProgress = uiState.sampleGenerationProgress,
                         onImportClick = {
                             videoPickerLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
@@ -175,8 +265,24 @@ fun DashboardScreen(
                         onYouTubeClick = viewModel::openYouTubeDialog,
                         onDemoClick = {
                             viewModel.openDemoMode(onDemoReady = onOpenClipsFeed)
+                        },
+                        onAddSampleMediaClick = {
+                            viewModel.generateRandomSampleVideo(isAutoSeed = false)
                         }
                     )
+                }
+
+                if (recentExports.isNotEmpty()) {
+                    item(key = "recent_exports_carousel_section") {
+                        RecentExportsCarouselSection(
+                            exports = recentExports,
+                            onPlayExport = handlePlayExport,
+                            onShareExport = handleShareExport,
+                            onEditExport = handleEditExport,
+                            onDeleteExport = handleDeleteExport,
+                            onViewAllClick = { showExportVaultSheet = true }
+                        )
+                    }
                 }
 
                 item {
@@ -261,10 +367,39 @@ fun DashboardScreen(
             )
         }
     }
+
+    if (showExportVaultSheet) {
+        val vaultSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showExportVaultSheet = false },
+            sheetState = vaultSheetState,
+            containerColor = SurfaceCard,
+            dragHandle = null
+        ) {
+            ExportHistoryVaultSheet(
+                exports = recentExports,
+                onPlayExport = handlePlayExport,
+                onShareExport = handleShareExport,
+                onEditExport = handleEditExport,
+                onDeleteExport = handleDeleteExport,
+                onClearAllExports = {
+                    viewModel.clearAllExports()
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar("Export history cleared")
+                    }
+                },
+                onDismiss = { showExportVaultSheet = false }
+            )
+        }
+    }
 }
 
 @Composable
-private fun DashboardHeader(totalClips: Int) {
+private fun DashboardHeader(
+    totalClips: Int,
+    totalExports: Int,
+    onOpenExportsVault: () -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -296,27 +431,60 @@ private fun DashboardHeader(totalClips: Int) {
             }
         }
 
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = NeonLime.copy(alpha = 0.14f),
-            border = BorderStroke(1.dp, NeonLime.copy(alpha = 0.4f))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            if (totalExports > 0) {
+                Surface(
+                    onClick = onOpenExportsVault,
+                    modifier = Modifier.testTag("header_exports_pill"),
+                    shape = RoundedCornerShape(999.dp),
+                    color = ElectricViolet.copy(alpha = 0.2f),
+                    border = BorderStroke(1.dp, ElectricViolet.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.History,
+                            contentDescription = "Open Export History",
+                            tint = ElectricVioletLight,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "$totalExports",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ElectricVioletLight
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = NeonLime.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, NeonLime.copy(alpha = 0.4f))
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    tint = NeonLime,
-                    modifier = Modifier.size(15.dp)
-                )
-                Text(
-                    text = "$totalClips Clips",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NeonLime
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = NeonLime,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "$totalClips Clips",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NeonLime
+                    )
+                }
             }
         }
     }
@@ -325,9 +493,12 @@ private fun DashboardHeader(totalClips: Int) {
 @Composable
 private fun StudioHeroCard(
     isExtracting: Boolean,
+    isGeneratingSample: Boolean,
+    sampleProgress: Int,
     onImportClick: () -> Unit,
     onYouTubeClick: () -> Unit,
-    onDemoClick: () -> Unit
+    onDemoClick: () -> Unit,
+    onAddSampleMediaClick: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -367,7 +538,7 @@ private fun StudioHeroCard(
                 border = BorderStroke(1.dp, ElectricViolet.copy(alpha = 0.45f))
             ) {
                 Text(
-                    text = "GEMINI MULTIMODAL + MEDIA3 + ML KIT",
+                    text = "GEMINI FLASH + MEDIA3 + ML KIT",
                     style = MaterialTheme.typography.labelSmall,
                     color = ElectricVioletLight,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -381,7 +552,7 @@ private fun StudioHeroCard(
             )
 
             Text(
-                text = "Import a video from your device or paste a public YouTube link—Gemini finds viral hooks, scores retention, and builds synced creator captions.",
+                text = "Import a video from your device or paste a public YouTube link—Gemini Flash finds viral hooks, scores retention, and builds synced creator captions.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -455,29 +626,117 @@ private fun StudioHeroCard(
                 }
             }
 
-            OutlinedButton(
-                onClick = onDemoClick,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("try_demo_mode_button"),
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, NeonLime.copy(alpha = 0.55f)),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = NeonLime.copy(alpha = 0.08f)
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayCircleOutline,
-                    contentDescription = null,
-                    tint = NeonLime
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Try Demo Mode",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = NeonLime
-                )
+                OutlinedButton(
+                    onClick = onDemoClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(50.dp)
+                        .testTag("try_demo_mode_button"),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    border = BorderStroke(1.dp, NeonLime.copy(alpha = 0.55f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = NeonLime.copy(alpha = 0.08f)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayCircleOutline,
+                        contentDescription = null,
+                        tint = NeonLime,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Demo Mode",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = NeonLime,
+                        maxLines = 1
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onAddSampleMediaClick,
+                    enabled = !isGeneratingSample,
+                    modifier = Modifier
+                        .weight(1.1f)
+                        .height(50.dp)
+                        .testTag("add_sample_5min_media_button"),
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp),
+                    border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.55f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = NeonCyan.copy(alpha = 0.08f)
+                    )
+                ) {
+                    if (isGeneratingSample) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = NeonCyan
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Saving $sampleProgress%",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NeonCyan,
+                            maxLines = 1
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.MovieCreation,
+                            contentDescription = null,
+                            tint = NeonCyan,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "+ 5m Media",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NeonCyan,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            if (isGeneratingSample) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("sample_video_progress_banner"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Creating random 5:00 MP4 in Android Media…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NeonCyan
+                        )
+                        Text(
+                            text = "$sampleProgress%",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { (sampleProgress / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = NeonCyan,
+                        trackColor = SurfaceElevated
+                    )
+                }
             }
         }
     }

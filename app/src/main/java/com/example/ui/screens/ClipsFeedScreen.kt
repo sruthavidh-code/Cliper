@@ -73,6 +73,7 @@ import com.example.model.ViralClip
 import com.example.model.formatTimeMs
 import com.example.ui.components.DemoPreviewCanvas
 import com.example.ui.components.ExportPipelineDialog
+import com.example.ui.components.MinimizedExportBanner
 import com.example.ui.components.ViralityBreakdownSection
 import com.example.ui.components.ViralityScoreBadge
 import com.example.ui.components.shareClipMetadataText
@@ -250,8 +251,16 @@ fun ClipsFeedScreen(
                     )
                 }
 
-                item { Spacer(modifier = Modifier.height(24.dp)) }
+                item { Spacer(modifier = Modifier.height(if (exportState.isMinimizedBannerVisible) 96.dp else 24.dp)) }
             }
+
+            MinimizedExportBanner(
+                state = exportState,
+                onExpand = { viewModel.setExportMinimized(false) },
+                onTogglePause = viewModel::togglePauseExport,
+                onRequestCancel = viewModel::requestCancelExport,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
         }
     }
 
@@ -262,6 +271,11 @@ fun ClipsFeedScreen(
         onAttachLocalVideo = { uri, targetClip ->
             viewModel.attachLocalVideo(uri, continueToExportClip = targetClip)
         },
+        onMinimize = { viewModel.setExportMinimized(true) },
+        onTogglePause = viewModel::togglePauseExport,
+        onRequestCancel = viewModel::requestCancelExport,
+        onDismissCancelConfirm = viewModel::dismissCancelConfirmation,
+        onConfirmCancel = viewModel::confirmCancelExport,
         onCancelOrDismiss = viewModel::cancelOrDismissExport,
         onBackToClips = viewModel::cancelOrDismissExport
     )
@@ -319,6 +333,7 @@ private fun ViralClipFeedCard(
                             panX = clip.effectivePanX,
                             zoomScale = clip.zoomScale,
                             autoFaceTrackEnabled = false,
+                            videoFilter = clip.videoFilter,
                             clipSeed = rank,
                             compactThumbnail = true
                         )

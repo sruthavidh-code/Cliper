@@ -7,8 +7,11 @@ import androidx.room.PrimaryKey
 import com.example.model.AspectRatioOption
 import com.example.model.CaptionStylePreset
 import com.example.model.ClipJsonCodec
+import com.example.model.ExportResolution
+import com.example.model.ExportedClipRecord
 import com.example.model.ProjectStatus
 import com.example.model.TargetDuration
+import com.example.model.VideoFilterPreset
 import com.example.model.VideoProject
 import com.example.model.ViralClip
 
@@ -66,7 +69,34 @@ data class ViralClipEntity(
     val captionStyle: String,
     val captionYPosition: Float,
     val captionUppercase: Boolean,
+    val videoFilter: String = VideoFilterPreset.NONE.name,
     val lastExportedUri: String?
+)
+
+@Entity(
+    tableName = "exported_clips",
+    indices = [
+        Index("exportedAtMs"),
+        Index("projectId"),
+        Index("clipId")
+    ]
+)
+data class ExportedClipEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val projectId: Long?,
+    val clipId: Long?,
+    val title: String,
+    val exportedUri: String,
+    val thumbnailPath: String?,
+    val durationMs: Long,
+    val fileSizeBytes: Long,
+    val resolution: String,
+    val aspectRatio: String,
+    val captionStyle: String,
+    val videoFilter: String,
+    val renderDurationMs: Long,
+    val isDemo: Boolean,
+    val exportedAtMs: Long
 )
 
 fun VideoProjectEntity.toDomain(): VideoProject = VideoProject(
@@ -130,6 +160,7 @@ fun ViralClipEntity.toDomain(): ViralClip = ViralClip(
     captionStyle = CaptionStylePreset.fromName(captionStyle),
     captionYPosition = captionYPosition,
     captionUppercase = captionUppercase,
+    videoFilter = VideoFilterPreset.fromName(videoFilter),
     lastExportedUri = lastExportedUri
 )
 
@@ -154,5 +185,42 @@ fun ViralClip.toEntity(): ViralClipEntity = ViralClipEntity(
     captionStyle = captionStyle.name,
     captionYPosition = captionYPosition,
     captionUppercase = captionUppercase,
+    videoFilter = videoFilter.name,
     lastExportedUri = lastExportedUri
+)
+
+fun ExportedClipEntity.toDomain(): ExportedClipRecord = ExportedClipRecord(
+    id = id,
+    projectId = projectId,
+    clipId = clipId,
+    title = title,
+    exportedUri = exportedUri,
+    thumbnailPath = thumbnailPath,
+    durationMs = durationMs,
+    fileSizeBytes = fileSizeBytes,
+    resolution = ExportResolution.fromName(resolution),
+    aspectRatio = AspectRatioOption.fromName(aspectRatio),
+    captionStyle = CaptionStylePreset.fromName(captionStyle),
+    videoFilter = VideoFilterPreset.fromName(videoFilter),
+    renderDurationMs = renderDurationMs,
+    isDemo = isDemo,
+    exportedAtMs = exportedAtMs
+)
+
+fun ExportedClipRecord.toEntity(): ExportedClipEntity = ExportedClipEntity(
+    id = id,
+    projectId = projectId,
+    clipId = clipId,
+    title = title,
+    exportedUri = exportedUri,
+    thumbnailPath = thumbnailPath,
+    durationMs = durationMs,
+    fileSizeBytes = fileSizeBytes,
+    resolution = resolution.name,
+    aspectRatio = aspectRatio.name,
+    captionStyle = captionStyle.name,
+    videoFilter = videoFilter.name,
+    renderDurationMs = renderDurationMs,
+    isDemo = isDemo,
+    exportedAtMs = exportedAtMs
 )
